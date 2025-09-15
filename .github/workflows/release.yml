@@ -24,6 +24,19 @@ jobs:
 
       - name: Install vsce
         run: npm i -g @vscode/vsce
+        
+      - name: Ensure PNG icon (replace SVG)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y librsvg2-bin jq
+          if [ -f images/logo.svg ]; then
+            rsvg-convert -w 256 -h 256 images/logo.svg -o images/logo.png
+          fi
+          jq '.icon="images/logo.png"' package.json > package.json.tmp && mv package.json.tmp package.json
+          # keep images in the VSIX
+          if [ -f .vscodeignore ]; then
+            sed -i '/^images\/\*\*/d' .vscodeignore
+          fi
 
       - name: Build VSIX
         run: vsce package --no-dependencies

@@ -170,7 +170,6 @@ export class FreeMarkerLexer {
   }
 
   private scanToken(): void {
-    const start = this.getCurrentPosition();
     const c = this.advance();
 
     switch (c) {

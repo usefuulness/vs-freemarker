@@ -507,7 +507,7 @@ export class SemanticAnalyzer {
   }
 
   private analyzePropertyAccess(node: PropertyAccessNode): TypeInfo {
-    const objectType = this.analyzeExpression(node.object);
+    this.analyzeExpression(node.object);
     // Simple property access - could be enhanced with more sophisticated type checking
     return { type: 'unknown', nullable: true };
   }

@@ -617,8 +617,8 @@ export class FreeMarkerParser {
 
   private parseCallExpression(): ExpressionNode {
     let expr = this.parsePrimaryExpression();
-    
-    while (true) {
+
+    while (this.check(TokenType.DOT) || this.check(TokenType.LPAREN)) {
       if (this.match(TokenType.DOT)) {
         const property = this.advance().value;
         expr = {
@@ -639,7 +639,7 @@ export class FreeMarkerParser {
           } while (this.match(TokenType.COMMA));
         }
         this.match(TokenType.RPAREN);
-        
+
         expr = {
           type: 'FunctionCall',
           name: (expr as VariableNode).name,
@@ -650,8 +650,6 @@ export class FreeMarkerParser {
             end: this.getCurrentPosition()
           }
         } as any;
-      } else {
-        break;
       }
     }
     

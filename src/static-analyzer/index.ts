@@ -88,7 +88,7 @@ export class FreeMarkerStaticAnalyzer {
     this.parser = new FreeMarkerParser([]);
   }
 
-  public analyze(template: string, filePath?: string): AnalysisResult {
+  public analyze(template: string, _filePath?: string): AnalysisResult {
     this.profiler.start();
     
     try {
@@ -143,8 +143,8 @@ export class FreeMarkerStaticAnalyzer {
 
   public analyzeIncremental(
     template: string,
-    changes: any[],
-    previousResult: AnalysisResult
+    _changes: any[],
+    _previousResult: AnalysisResult
   ): AnalysisResult {
     // For now, perform full analysis
     // In the future, this could be optimized for incremental updates

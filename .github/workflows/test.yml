@@ -52,7 +52,7 @@ jobs:
       
     - name: Upload extension artifact
       if: matrix.node-version == '18.x'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: freemarker-extension
         path: '*.vsix'

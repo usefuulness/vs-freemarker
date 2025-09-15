@@ -235,6 +235,66 @@ describe('FreeMarker Static Analyzer Integration', () => {
         expect(result.diagnostics.some(d => d.code === 'FTL2004' && d.message.includes('layout'))).toBe(false);
       });
 
+      test('does not report missing files for optional includes', () => {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-optional-include-'));
+        const template = '<@include path="/missing.ftl" optional=true />';
+        const mainPath = path.join(tmpDir, 'index.ftl');
+        fs.writeFileSync(mainPath, template);
+
+        analyzer.setTemplateRoots([tmpDir]);
+        const result = analyzer.analyze(template, mainPath);
+
+        expect(result.diagnostics.some(d => d.code === 'FTL4001')).toBe(false);
+      });
+
+      test('supports lambda expressions inside built-ins without undefined diagnostics', () => {
+        const template = '<#assign trimmed = [" a ", "b "]?map(lang -> lang?trim)/>${trimmed?size}';
+        const result = analyzer.analyze(template);
+
+        expect(result.diagnostics.some(d => d.code === 'FTL2001' && /lang/.test(d.message))).toBe(false);
+        expect(result.diagnostics.some(d => d.code === 'FTL2001' && /unknown/.test(d.message))).toBe(false);
+      });
+
+      test('allows macros to reference helpers defined later in the template', () => {
+        const template =
+          '<#macro layout><@helper/></#macro>' +
+          '<#macro helper>${"ok"}</#macro>' +
+          '<@layout />';
+        const result = analyzer.analyze(template);
+
+        expect(result.diagnostics.some(d => d.code === 'FTL2004')).toBe(false);
+      });
+
+      test('analyzes included layouts that use lambdas and optional includes', () => {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-layout-lambda-'));
+        const layoutsDir = path.join(tmpDir, 'layouts');
+        fs.mkdirSync(layoutsDir, { recursive: true });
+        const layoutPath = path.join(layoutsDir, 'main.ftl');
+        fs.writeFileSync(
+          layoutPath,
+          `<#macro layout title>
+  <#assign languages = ["de", "en"]?map(lang -> lang?upper_case) />
+  <@stylesheet href="/assets/css/main.css" />
+  <@include path="/partials/missing.ftl" optional=true />
+  <#nested>
+</#macro>
+<#macro stylesheet href>
+  <link rel="stylesheet" href="\${href}">
+</#macro>`
+        );
+
+        const template = '<@include path="/layouts/main.ftl" />' + '<@layout title="Home">Hello</@layout>';
+        const mainPath = path.join(tmpDir, 'page.ftl');
+        fs.writeFileSync(mainPath, template);
+
+        analyzer.setTemplateRoots([tmpDir]);
+        const result = analyzer.analyze(template, mainPath);
+
+        expect(result.diagnostics.some(d => d.code === 'FTL2004')).toBe(false);
+        expect(result.diagnostics.some(d => d.code === 'FTL2001' && /lang|unknown/.test(d.message))).toBe(false);
+        expect(result.diagnostics.some(d => d.code === 'FTL4001')).toBe(false);
+      });
+
       test('resolves absolute imports using ancestor directories as template roots', () => {
         const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-root-detect-'));
         const templatesDir = path.join(workspaceDir, 'src', 'templates');

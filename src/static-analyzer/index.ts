@@ -10,6 +10,7 @@ import { resolveTemplatePath } from './path-utils';
 interface DependencyEntry {
   path: string;
   range: Range;
+  optional?: boolean;
 }
 
 interface CachedTemplate {
@@ -249,7 +250,7 @@ export class FreeMarkerStaticAnalyzer {
     });
 
     const includeEntries = this.extractDependencyEntries(
-      ast.includes.map(inc => ({ path: inc.path, range: inc.range })),
+      ast.includes.map(inc => ({ path: inc.path, range: inc.range, optional: inc.optional })),
       content,
       [/<#include\s+['"]([^'"<>]+)['"]/g, /<@include\s+[^>]*path=['"]([^'"<>]+)['"][^>]*>/g]
     );
@@ -279,6 +280,9 @@ export class FreeMarkerStaticAnalyzer {
     });
 
     if (!resolved) {
+      if (entry.optional) {
+        return;
+      }
       this.errorReporter.addError(`File not found: ${entry.path}`, range, 'FTL4001');
       return;
     }
@@ -294,7 +298,7 @@ export class FreeMarkerStaticAnalyzer {
   }
 
   private extractDependencyEntries(
-    nodes: { path: string; range?: Range }[],
+    nodes: { path: string; range?: Range; optional?: boolean }[],
     content: string,
     regexes: RegExp[]
   ): DependencyEntry[] {
@@ -307,7 +311,8 @@ export class FreeMarkerStaticAnalyzer {
 
       entries.push({
         path: node.path,
-        range: this.ensureRange(node.range, content)
+        range: this.ensureRange(node.range, content),
+        optional: node.optional
       });
     });
 
@@ -418,6 +423,7 @@ export class FreeMarkerStaticAnalyzer {
 
   private extractDependencyPaths(template: CachedTemplate): string[] {
     const dependencies = new Set<string>();
+    const optionalDependencies = new Set<string>();
 
     if (template.ast) {
       template.ast.imports.forEach(imp => {
@@ -428,7 +434,11 @@ export class FreeMarkerStaticAnalyzer {
 
       template.ast.includes.forEach(inc => {
         if (inc.path) {
-          dependencies.add(inc.path);
+          if (inc.optional) {
+            optionalDependencies.add(inc.path);
+          } else {
+            dependencies.add(inc.path);
+          }
         }
       });
     }
@@ -444,8 +454,9 @@ export class FreeMarkerStaticAnalyzer {
       regex.lastIndex = 0;
       let match: RegExpExecArray | null;
       while ((match = regex.exec(template.content)) !== null) {
-        if (match[1]) {
-          dependencies.add(match[1]);
+        const literal = match[1];
+        if (literal && !optionalDependencies.has(literal)) {
+          dependencies.add(literal);
         }
       }
     });

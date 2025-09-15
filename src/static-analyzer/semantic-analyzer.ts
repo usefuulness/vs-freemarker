@@ -23,7 +23,8 @@ import {
   PropertyAccessNode,
   BuiltInNode,
   ExistsNode,
-  FallbackNode
+  FallbackNode,
+  LambdaExpressionNode
 } from './parser';
 
 import { FreeMarkerLexer } from './lexer';
@@ -235,17 +236,39 @@ export class SemanticAnalyzer {
   private analyzeTemplate(node: TemplateNode): void {
     // Process imports first
     node.imports.forEach(importNode => this.analyzeImport(importNode));
-    
+
     // Process includes
     node.includes.forEach(includeNode => this.analyzeInclude(includeNode));
-    
+
+    // Predeclare macros and functions so they are available regardless of order
+    node.body.forEach(child => {
+      switch (child.type) {
+        case 'Macro':
+          this.declareMacro(child as MacroNode);
+          break;
+        case 'Function':
+          this.declareFunction(child as FunctionNode);
+          break;
+      }
+    });
+
+    const macroSnapshot = new Map(this.symbolTable.currentScope.macros);
+    node.body.forEach(child => {
+      if (child.type === 'Macro') {
+        const macro = this.symbolTable.currentScope.macros.get((child as MacroNode).name);
+        if (macro) {
+          macro.contextMacros = new Map(macroSnapshot);
+        }
+      }
+    });
+
     // Process the body
     node.body.forEach(child => this.analyzeNode(child));
   }
 
   private analyzeAssignment(node: AssignmentNode): void {
     const valueType = this.analyzeExpression(node.value);
-    
+
     const variableInfo: VariableInfo = {
       name: node.variable,
       type: valueType.type,
@@ -258,17 +281,31 @@ export class SemanticAnalyzer {
     this.semanticInfo.variables.set(node.variable, variableInfo);
   }
 
-  private analyzeMacro(node: MacroNode): void {
-    const macroInfo: MacroInfo = {
-      name: node.name,
-      parameters: node.parameters,
-      definedAt: node.position,
-      usages: [],
-      node
-    };
+  private declareMacro(node: MacroNode): MacroInfo {
+    let macroInfo = this.symbolTable.currentScope.macros.get(node.name);
+    if (!macroInfo) {
+      macroInfo = {
+        name: node.name,
+        parameters: node.parameters,
+        definedAt: node.position,
+        usages: [],
+        node,
+        contextMacros: new Map()
+      };
 
-    this.symbolTable.currentScope.macros.set(node.name, macroInfo);
-    this.semanticInfo.macros.set(node.name, macroInfo);
+      this.symbolTable.currentScope.macros.set(node.name, macroInfo);
+      this.semanticInfo.macros.set(node.name, macroInfo);
+    } else {
+      macroInfo.parameters = node.parameters;
+      macroInfo.definedAt = node.position;
+      macroInfo.node = node;
+    }
+
+    return macroInfo;
+  }
+
+  private analyzeMacro(node: MacroNode): void {
+    const macroInfo = this.declareMacro(node);
 
     // Create a new scope for the macro
     const macroScope: Scope = {
@@ -279,6 +316,14 @@ export class SemanticAnalyzer {
       functions: new Map(),
       parent: this.symbolTable.currentScope
     };
+
+    if (macroInfo.contextMacros) {
+      macroInfo.contextMacros.forEach((ctxMacro, macroName) => {
+        if (!macroScope.macros.has(macroName)) {
+          macroScope.macros.set(macroName, ctxMacro);
+        }
+      });
+    }
 
     // Add parameters as local variables
     node.parameters.forEach(param => {
@@ -301,17 +346,30 @@ export class SemanticAnalyzer {
     this.symbolTable.currentScope = previousScope;
   }
 
-  private analyzeFunction(node: FunctionNode): void {
-    const functionInfo: FunctionInfo = {
-      name: node.name,
-      parameters: node.parameters,
-      returnType: node.returnType || 'any',
-      definedAt: node.position,
-      usages: []
-    };
+  private declareFunction(node: FunctionNode): FunctionInfo {
+    let functionInfo = this.symbolTable.currentScope.functions.get(node.name);
+    if (!functionInfo) {
+      functionInfo = {
+        name: node.name,
+        parameters: node.parameters,
+        returnType: node.returnType || 'any',
+        definedAt: node.position,
+        usages: []
+      };
 
-    this.symbolTable.currentScope.functions.set(node.name, functionInfo);
-    this.semanticInfo.functions.set(node.name, functionInfo);
+      this.symbolTable.currentScope.functions.set(node.name, functionInfo);
+      this.semanticInfo.functions.set(node.name, functionInfo);
+    } else {
+      functionInfo.parameters = node.parameters;
+      functionInfo.returnType = node.returnType || functionInfo.returnType;
+      functionInfo.definedAt = node.position;
+    }
+
+    return functionInfo;
+  }
+
+  private analyzeFunction(node: FunctionNode): void {
+    this.declareFunction(node);
 
     // Create a new scope for the function
     const functionScope: Scope = {
@@ -623,6 +681,8 @@ export class SemanticAnalyzer {
         return this.analyzeListLiteral(expr as ListLiteralNode);
       case 'HashLiteral':
         return this.analyzeHashLiteral(expr as HashLiteralNode);
+      case 'Lambda':
+        return this.analyzeLambda(expr as LambdaExpressionNode);
       default:
         return { type: 'unknown', nullable: true };
     }
@@ -759,6 +819,40 @@ export class SemanticAnalyzer {
   private analyzeFallback(node: FallbackNode): TypeInfo {
     this.analyzeExpression(node.target, true);
     return this.analyzeExpression(node.fallback);
+  }
+
+  private analyzeLambda(node: LambdaExpressionNode): TypeInfo {
+    const lambdaScope: Scope = {
+      type: 'function',
+      name: 'lambda',
+      variables: new Map(),
+      macros: new Map(),
+      functions: new Map(),
+      parent: this.symbolTable.currentScope
+    };
+
+    node.parameters.forEach(param => {
+      if (!param) {
+        return;
+      }
+
+      const paramInfo: VariableInfo = {
+        name: param,
+        type: 'any',
+        scope: 'local',
+        definedAt: node.position,
+        usages: []
+      };
+
+      lambdaScope.variables.set(param, paramInfo);
+    });
+
+    const previousScope = this.symbolTable.currentScope;
+    this.symbolTable.currentScope = lambdaScope;
+    this.analyzeExpression(node.body);
+    this.symbolTable.currentScope = previousScope;
+
+    return { type: 'lambda', nullable: false };
   }
 
   private resolveTemplateReference(templatePath: string): string | undefined {

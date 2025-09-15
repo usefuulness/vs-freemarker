@@ -44,6 +44,7 @@ export enum TokenType {
   
   RANGE = 'RANGE',                       // ..
   RANGE_INCLUSIVE = 'RANGE_INCLUSIVE',   // ...
+  ARROW = 'ARROW',                       // ->
   
   // Built-in operators
   BUILTIN_START = 'BUILTIN_START',       // ?
@@ -309,7 +310,10 @@ export class FreeMarkerLexer {
   }
 
   private scanMinus(): void {
-    if (this.peek() === '-') {
+    if (this.peek() === '>') {
+      this.advance();
+      this.addToken(TokenType.ARROW, '->');
+    } else if (this.peek() === '-') {
       this.advance();
       this.addToken(TokenType.DECREMENT, '--');
     } else if (this.peek() === '=') {

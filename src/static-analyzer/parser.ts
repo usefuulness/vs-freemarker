@@ -143,12 +143,19 @@ export interface IncludeNode extends ASTNode {
   type: 'Include';
   path: string;
   resolvedPath?: string;
+  optional?: boolean;
 }
 
 export interface ParameterNode extends ASTNode {
   type: 'Parameter';
   name?: string;
   value: ExpressionNode;
+}
+
+export interface LambdaExpressionNode extends ExpressionNode {
+  type: 'Lambda';
+  parameters: string[];
+  body: ExpressionNode;
 }
 
 export interface IfNode extends ASTNode {
@@ -399,6 +406,7 @@ export class FreeMarkerParser {
     let includePath = '';
     let includeStart = this.getCurrentPosition();
     let includeEnd = includeStart;
+    let optional = false;
 
     while (!this.check(TokenType.DIRECTIVE_END) && !this.isAtEnd()) {
       if (this.check(TokenType.SLASH)) {
@@ -417,13 +425,22 @@ export class FreeMarkerParser {
         };
       } else {
         const nameToken = this.advance();
-        if (nameToken.value === 'path') {
+        const paramName = nameToken.value?.toLowerCase();
+        if (paramName === 'path') {
           if (this.match(TokenType.ASSIGN)) {
             const expr = this.parseExpression();
             includePath = this.extractStringValue(expr) ?? includePath;
             if (expr?.range) {
               includeStart = expr.range.start;
               includeEnd = expr.range.end;
+            }
+          }
+        } else if (paramName === 'optional') {
+          if (this.match(TokenType.ASSIGN)) {
+            const expr = this.parseExpression();
+            const value = this.extractBooleanValue(expr);
+            if (typeof value === 'boolean') {
+              optional = value;
             }
           }
         } else if (this.match(TokenType.ASSIGN)) {
@@ -440,7 +457,8 @@ export class FreeMarkerParser {
       type: 'Include',
       path: this.stripQuotes(includePath),
       position: includeStart,
-      range: { start: includeStart, end: includeEnd }
+      range: { start: includeStart, end: includeEnd },
+      optional
     };
 
     this.includes.push(includeNode);
@@ -778,7 +796,8 @@ export class FreeMarkerParser {
       this.check(TokenType.DOT) ||
       this.check(TokenType.LPAREN) ||
       this.check(TokenType.QUESTION) ||
-      this.check(TokenType.NOT)
+      this.check(TokenType.NOT) ||
+      this.check(TokenType.ARROW)
     ) {
       if (this.match(TokenType.DOT)) {
         const property = this.advance().value;
@@ -846,6 +865,29 @@ export class FreeMarkerParser {
             }
           } as any;
         }
+      } else if (this.match(TokenType.ARROW)) {
+        const parameters: string[] = [];
+        if (expr.type === 'Variable') {
+          parameters.push((expr as VariableNode).name);
+        } else if (expr.type === 'ListLiteral') {
+          (expr as ListLiteralNode).items.forEach(item => {
+            if (item.type === 'Variable') {
+              parameters.push((item as VariableNode).name);
+            }
+          });
+        }
+
+        const body = this.parseExpression();
+        const start = expr.range?.start ?? expr.position;
+        const end = body.range?.end ?? this.getCurrentPosition();
+
+        expr = {
+          type: 'Lambda',
+          parameters,
+          body,
+          position: start,
+          range: { start, end }
+        } as any;
       } else if (this.match(TokenType.NOT)) {
         const fallbackExpr = this.parseExpression();
         const endPos = fallbackExpr.range ? fallbackExpr.range.end : this.getCurrentPosition();
@@ -1200,11 +1242,15 @@ export class FreeMarkerParser {
     const start = pathParam.value?.range?.start ?? pathParam.position ?? fallbackPosition;
     const end = pathParam.value?.range?.end ?? pathParam.range?.end ?? start;
 
+    const optionalParam = parameters.find(param => (param.name ?? '').toLowerCase() === 'optional');
+    const optionalValue = optionalParam ? this.extractBooleanValue(optionalParam.value) : undefined;
+
     const includeNode: IncludeNode = {
       type: 'Include',
       path: this.stripQuotes(rawPath),
       position: start,
-      range: { start, end }
+      range: { start, end },
+      optional: typeof optionalValue === 'boolean' ? optionalValue : undefined
     };
 
     this.includes.push(includeNode);
@@ -1270,6 +1316,41 @@ export class FreeMarkerParser {
       const literal = expr as LiteralNode;
       if (literal.dataType === 'string') {
         return literal.value;
+      }
+    }
+
+    return undefined;
+  }
+
+  private extractBooleanValue(expr?: ExpressionNode): boolean | undefined {
+    if (!expr) {
+      return undefined;
+    }
+
+    if (expr.type === 'Literal') {
+      const literal = expr as LiteralNode;
+      if (literal.dataType === 'boolean') {
+        return Boolean(literal.value);
+      }
+
+      if (literal.dataType === 'string') {
+        const normalized = this.stripQuotes(String(literal.value)).toLowerCase();
+        if (normalized === 'true') {
+          return true;
+        }
+        if (normalized === 'false') {
+          return false;
+        }
+      }
+    }
+
+    if (expr.type === 'Variable') {
+      const name = (expr as VariableNode).name.toLowerCase();
+      if (name === 'true') {
+        return true;
+      }
+      if (name === 'false') {
+        return false;
       }
     }
 

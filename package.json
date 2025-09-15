@@ -1,5 +1,5 @@
 {
-    "name": "FreeMarker",
+    "name": "freemarker",
     "displayName": "FreeMarker",
     "description": "Language Support for FreeMarker",
     "version": "9.0.3",
@@ -13,7 +13,7 @@
         "url": "https://github.com/usefuulness/vs-freemarker.git"
     },
     "engines": {
-        "vscode": "^1.104.0"
+        "vscode": "^1.80.0"
     },
     "categories": [
         "Languages"
@@ -58,7 +58,7 @@
     "devDependencies": {
         "@types/jest": "^29.5.0",
         "@types/node": "^18.0.0",
-        "@types/vscode": "^1.104.0",
+        "@types/vscode": "^1.80.0",
         "@typescript-eslint/eslint-plugin": "^6.0.0",
         "@typescript-eslint/parser": "^6.0.0",
         "@vscode/vsce": "^2.22.0",

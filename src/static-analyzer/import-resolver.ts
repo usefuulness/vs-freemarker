@@ -214,7 +214,7 @@ export class ImportResolver {
     };
 
     try {
-      const result = this.analyzer.analyze(templateContent, uri);
+      const result = await this.analyzer.analyze(templateContent, uri);
       node.ast = result.ast;
       
       // Add any analysis errors

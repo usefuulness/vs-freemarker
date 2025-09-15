@@ -108,15 +108,13 @@ export class FreeMarkerStaticAnalyzer {
     this.parser = new FreeMarkerParser([]);
   }
 
-  public analyze(template: string, filePath?: string): AnalysisResult {
+  public async analyze(template: string, _filePath?: string): Promise<AnalysisResult> {
     this.profiler.start();
-    this.errorReporter.clear();
 
-      try {
-        this.checkBasicSyntax(template);
-        // Tokenize
-        this.profiler.startPhase('lexing');
-        const tokens = this.lexer.tokenize(template);
+    try {
+      // Tokenize
+      this.profiler.startPhase('lexing');
+      const tokens = this.lexer.tokenize(template);
       this.profiler.endPhase('lexing');
 
       // Parse
@@ -183,11 +181,11 @@ export class FreeMarkerStaticAnalyzer {
     }
   }
 
-  public analyzeIncremental(
+  public async analyzeIncremental(
     template: string,
     _changes: any[],
     _previousResult: AnalysisResult
-  ): AnalysisResult {
+  ): Promise<AnalysisResult> {
     // For now, perform full analysis
     // In the future, this could be optimized for incremental updates
     return this.analyze(template);

@@ -13,80 +13,31 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(diagnosticCollection);
 
   if (vscode.window.activeTextEditor) {
-    scheduleDiagnostics(vscode.window.activeTextEditor.document, 0);
+    void refreshDiagnostics(vscode.window.activeTextEditor.document);
   }
 
   context.subscriptions.push(
-    vscode.workspace.onDidOpenTextDocument(refreshDiagnostics),
-    vscode.workspace.onDidChangeTextDocument(e => refreshDiagnostics(e.document)),
-    vscode.workspace.onDidCloseTextDocument(doc => diagnosticCollection.delete(doc.uri)),
-    vscode.commands.registerCommand('freemarker.clearImportCache', () => {
-      importResolver.invalidateCache();
-      vscode.window.showInformationMessage('FreeMarker template cache cleared.');
-    }),
-    vscode.workspace.onDidChangeConfiguration(event => {
-      if (affectsImportResolverConfiguration(event)) {
-        importResolver.invalidateCache();
-        importResolver = createImportResolver();
-      }
-    }),
-    vscode.workspace.onDidChangeWorkspaceFolders(() => {
-      importResolver.invalidateCache();
-    })
+    vscode.workspace.onDidOpenTextDocument(document => void refreshDiagnostics(document)),
+    vscode.workspace.onDidChangeTextDocument(e => void refreshDiagnostics(e.document)),
+    vscode.workspace.onDidCloseTextDocument(doc => diagnosticCollection.delete(doc.uri))
   );
 }
 
-function updateTemplateRoots(): void {
-  const roots = vscode.workspace.workspaceFolders?.map(folder => folder.uri.fsPath) ?? [];
-  analyzer.setTemplateRoots(roots);
-}
+async function refreshDiagnostics(document: vscode.TextDocument): Promise<void> {
 
-function scheduleDiagnostics(document: vscode.TextDocument, delay = ANALYSIS_DEBOUNCE_MS): void {
   if (document.languageId !== 'ftl') {
     return;
   }
 
-  const key = document.uri.toString();
-  const existing = pendingAnalyses.get(key);
-  if (existing) {
-    clearTimeout(existing);
-  }
-
-  const handle = setTimeout(() => {
-    pendingAnalyses.delete(key);
-
-    if (document.isClosed) {
-      diagnosticCollection.delete(document.uri);
-      return;
-    }
-
-    refreshDiagnostics(document);
-  }, Math.max(delay, 0));
-
-  pendingAnalyses.set(key, handle);
-}
-
-function cancelScheduledDiagnostics(uri: vscode.Uri): void {
-  const key = uri.toString();
-  const existing = pendingAnalyses.get(key);
-  if (existing) {
-    clearTimeout(existing);
-    pendingAnalyses.delete(key);
-  }
-}
-
-function refreshDiagnostics(document: vscode.TextDocument): void {
   try {
-    const result = analyzer.analyze(document.getText(), document.uri.fsPath);
-    const diagnostics = result.diagnostics.flatMap(diagnostic => {
-      const range = toVsCodeRange(diagnostic.range);
-      if (!range) {
-        console.warn('[FreeMarker] Dropping diagnostic with invalid range', diagnostic);
-        return [] as vscode.Diagnostic[];
-      }
+    const result = await analyzer.analyze(document.getText(), document.uri.fsPath);
+    const diagnostics = result.diagnostics.map(d => {
+      const start = new vscode.Position(d.range.start.line - 1, d.range.start.character - 1);
+      const end = new vscode.Position(d.range.end.line - 1, d.range.end.character - 1);
+      const range = new vscode.Range(start, end);
 
       let severity: vscode.DiagnosticSeverity;
-      switch (diagnostic.severity) {
+      switch (d.severity) {
         case 'warning':
           severity = vscode.DiagnosticSeverity.Warning;
           break;
@@ -97,18 +48,19 @@ function refreshDiagnostics(document: vscode.TextDocument): void {
           severity = vscode.DiagnosticSeverity.Error;
       }
 
-      const vscodeDiagnostic = new vscode.Diagnostic(range, diagnostic.message, severity);
-      if (diagnostic.code) {
-        vscodeDiagnostic.code = diagnostic.code;
+
+      const diag = new vscode.Diagnostic(range, d.message, severity);
+      if (d.code) {
+        diag.code = d.code;
       }
-      vscodeDiagnostic.source = diagnostic.source;
-      return [vscodeDiagnostic];
+      diag.source = d.source;
+      return diag;
+
     });
 
     diagnosticCollection.set(document.uri, diagnostics);
   } catch (error) {
-    console.error('[FreeMarker] Failed to analyze document', error);
-    diagnosticCollection.delete(document.uri);
+    console.error('Failed to analyze FreeMarker template', error);
   }
 }
 

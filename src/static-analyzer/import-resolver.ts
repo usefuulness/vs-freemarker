@@ -69,8 +69,9 @@ export class ImportResolver {
       maxCacheSize: 200,
       ...options
     };
-
+    
     this.cache = new LRUCache<string, DependencyNode>(this.options.maxCacheSize);
+
   }
 
   public async resolveImports(rootUri: string, content?: string): Promise<DependencyGraph> {

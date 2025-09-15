@@ -83,6 +83,24 @@ export interface PropertyAccessNode extends ExpressionNode {
   property: string;
 }
 
+export interface BuiltInNode extends ExpressionNode {
+  type: 'BuiltIn';
+  name: string;
+  target: ExpressionNode;
+  arguments?: ExpressionNode[];
+}
+
+export interface ExistsNode extends ExpressionNode {
+  type: 'Exists';
+  target: ExpressionNode;
+}
+
+export interface FallbackNode extends ExpressionNode {
+  type: 'Fallback';
+  target: ExpressionNode;
+  fallback: ExpressionNode;
+}
+
 export interface AssignmentNode extends ASTNode {
   type: 'Assignment';
   variable: string;
@@ -118,8 +136,9 @@ export interface IfNode extends ASTNode {
 
 export interface ListNode extends ASTNode {
   type: 'List';
-  item: string;
   iterable: ExpressionNode;
+  item: string;
+  key?: string;
   body: ASTNode[];
 }
 
@@ -197,10 +216,6 @@ export class FreeMarkerParser {
 
   private parseDirective(): ASTNode | null {
     const nameToken = this.peek();
-    if (nameToken.type !== TokenType.IDENTIFIER) {
-      return null;
-    }
-    
     const name = nameToken.value;
     this.advance();
 
@@ -333,21 +348,34 @@ export class FreeMarkerParser {
   }
 
   private parseList(): ListNode {
-    const item = this.advance().value;
-    
+    const iterable = this.parseExpression();
+
     if (!this.match(TokenType.AS)) {
       throw new Error('Expected "as" in list directive');
     }
-    
-    const iterable = this.parseExpression();
+
+    this.skipWhitespace();
+    const firstVar = this.advance().value;
+    let item = firstVar;
+    let key: string | undefined;
+
+    this.skipWhitespace();
+    if (this.match(TokenType.COMMA)) {
+      this.skipWhitespace();
+      const secondVar = this.advance().value;
+      key = firstVar;
+      item = secondVar;
+    }
+
     this.match(TokenType.DIRECTIVE_END);
-    
+
     const body = this.parseDirectiveBody();
-    
+
     return {
       type: 'List',
-      item,
       iterable,
+      item,
+      key,
       body,
       position: this.getCurrentPosition(),
       range: {
@@ -618,7 +646,12 @@ export class FreeMarkerParser {
   private parseCallExpression(): ExpressionNode {
     let expr = this.parsePrimaryExpression();
 
-    while (this.check(TokenType.DOT) || this.check(TokenType.LPAREN)) {
+    while (
+      this.check(TokenType.DOT) ||
+      this.check(TokenType.LPAREN) ||
+      this.check(TokenType.QUESTION) ||
+      this.check(TokenType.NOT)
+    ) {
       if (this.match(TokenType.DOT)) {
         const property = this.advance().value;
         expr = {
@@ -650,9 +683,60 @@ export class FreeMarkerParser {
             end: this.getCurrentPosition()
           }
         } as any;
+      } else if (this.match(TokenType.QUESTION)) {
+        if (this.match(TokenType.QUESTION)) {
+          expr = {
+            type: 'Exists',
+            target: expr,
+            position: expr.position,
+            range: {
+              start: expr.range.start,
+              end: this.getCurrentPosition()
+            }
+          } as any;
+        } else {
+          const name = this.advance().value;
+          let args: ExpressionNode[] | undefined;
+          if (this.match(TokenType.LPAREN)) {
+            args = [];
+            if (!this.check(TokenType.RPAREN)) {
+              do {
+                args.push(this.parseExpression());
+              } while (this.match(TokenType.COMMA));
+            }
+            this.match(TokenType.RPAREN);
+          }
+          expr = {
+            type: 'BuiltIn',
+            name,
+            target: expr,
+            arguments: args,
+            position: expr.position,
+            range: {
+              start: expr.range.start,
+              end: this.getCurrentPosition()
+            }
+          } as any;
+        }
+      } else if (this.match(TokenType.NOT)) {
+        const fallbackExpr = this.parseExpression();
+        const endPos = fallbackExpr.range ? fallbackExpr.range.end : this.getCurrentPosition();
+        expr = {
+          type: 'Fallback',
+          target: expr,
+          fallback: fallbackExpr,
+          position: expr.position,
+          range: {
+            start: expr.range.start,
+            end: endPos
+          }
+        } as any;
+        break;
+      } else {
+        break;
       }
     }
-    
+
     return expr;
   }
 
@@ -802,7 +886,9 @@ export class FreeMarkerParser {
     
     while (!this.isAtEnd()) {
       if (this.checkDirectiveEnd()) {
-        this.advance();
+        this.advance(); // consume start
+        this.advance(); // consume name
+        this.match(TokenType.DIRECTIVE_END);
         break;
       }
       
@@ -821,7 +907,7 @@ export class FreeMarkerParser {
   }
 
   private checkDirectiveEnd(): boolean {
-    return this.check(TokenType.DIRECTIVE_START) && 
+    return this.check(TokenType.DIRECTIVE_START) &&
            this.tokens[this.current + 1]?.value?.startsWith('/');
   }
 
@@ -833,6 +919,7 @@ export class FreeMarkerParser {
   }
 
   private match(...types: TokenType[]): boolean {
+    this.skipWhitespace();
     for (const type of types) {
       if (this.check(type)) {
         this.advance();
@@ -843,6 +930,7 @@ export class FreeMarkerParser {
   }
 
   private check(type: TokenType): boolean {
+    this.skipWhitespace();
     if (this.isAtEnd()) return false;
     return this.peek().type === type;
   }
@@ -850,6 +938,15 @@ export class FreeMarkerParser {
   private advance(): Token {
     if (!this.isAtEnd()) this.current++;
     return this.previous();
+  }
+
+  private skipWhitespace(): void {
+    while (
+      !this.isAtEnd() &&
+      (this.peek().type === TokenType.WHITESPACE || this.peek().type === TokenType.NEWLINE)
+    ) {
+      this.current++;
+    }
   }
 
   private isAtEnd(): boolean {

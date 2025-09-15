@@ -75,6 +75,25 @@ describe('FreeMarker Static Analyzer Integration', () => {
 
         expect(result.diagnostics.some(d => d.code === 'FTL1005')).toBe(true);
       });
+
+      test('treats variable as defined after null check', () => {
+        const template = `<#if user??>\${user}</#if>`;
+        const result = analyzer.analyze(template);
+        expect(result.diagnostics.some(d => d.code === 'FTL2001' && d.message.includes('user'))).toBe(false);
+      });
+
+      test('supports fallback default operator', () => {
+        const template = '${foo!"bar"}';
+        const result = analyzer.analyze(template);
+        expect(result.diagnostics.some(d => d.code === 'FTL2001')).toBe(false);
+      });
+
+      test('handles list with key and value variables', () => {
+        const template = '<#list others as attrName, attrVal>${attrName}="${attrVal?string}"</#list>';
+        const result = analyzer.analyze(template);
+        expect(result.diagnostics.some(d => d.message.includes('attrName'))).toBe(false);
+        expect(result.diagnostics.some(d => d.message.includes('attrVal'))).toBe(false);
+      });
     });
 
   describe('Basic robustness', () => {

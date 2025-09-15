@@ -17,7 +17,10 @@ import {
   UnaryExpressionNode,
   LiteralNode,
   FunctionCallNode,
-  PropertyAccessNode
+  PropertyAccessNode,
+  BuiltInNode,
+  ExistsNode,
+  FallbackNode
 } from './parser';
 
 import { SemanticInfo, VariableInfo, MacroInfo, FunctionInfo, ImportInfo } from './index';
@@ -309,7 +312,9 @@ export class SemanticAnalyzer {
 
   private analyzeIf(node: IfNode): void {
     this.analyzeExpression(node.condition);
-    
+
+    const definedVars = this.extractDefinedVariables(node.condition);
+
     // Create new scope for then branch
     const thenScope: Scope = {
       type: 'local',
@@ -318,6 +323,17 @@ export class SemanticAnalyzer {
       functions: new Map(),
       parent: this.symbolTable.currentScope
     };
+
+    definedVars.forEach(name => {
+      const varInfo: VariableInfo = {
+        name,
+        type: 'any',
+        scope: 'local',
+        definedAt: node.position,
+        usages: []
+      };
+      thenScope.variables.set(name, varInfo);
+    });
 
     const previousScope = this.symbolTable.currentScope;
     this.symbolTable.currentScope = thenScope;
@@ -352,15 +368,26 @@ export class SemanticAnalyzer {
       parent: this.symbolTable.currentScope
     };
 
-    // Add loop variable
-    const loopVarInfo: VariableInfo = {
+    // Add loop variables
+    if (node.key) {
+      const keyInfo: VariableInfo = {
+        name: node.key,
+        type: 'any',
+        scope: 'loop',
+        definedAt: node.position,
+        usages: []
+      };
+      loopScope.variables.set(node.key, keyInfo);
+    }
+
+    const itemInfo: VariableInfo = {
       name: node.item,
       type: 'any',
       scope: 'loop',
       definedAt: node.position,
       usages: []
     };
-    loopScope.variables.set(node.item, loopVarInfo);
+    loopScope.variables.set(node.item, itemInfo);
 
     const previousScope = this.symbolTable.currentScope;
     this.symbolTable.currentScope = loopScope;
@@ -414,10 +441,10 @@ export class SemanticAnalyzer {
     }
   }
 
-  private analyzeExpression(expr: ExpressionNode): TypeInfo {
+  private analyzeExpression(expr: ExpressionNode, ignoreUndefined = false): TypeInfo {
     switch (expr.type) {
       case 'Variable':
-        return this.analyzeVariableReference(expr as VariableNode);
+        return this.analyzeVariableReference(expr as VariableNode, ignoreUndefined);
       case 'Literal':
         return this.analyzeLiteral(expr as LiteralNode);
       case 'BinaryExpression':
@@ -428,21 +455,29 @@ export class SemanticAnalyzer {
         return this.analyzeFunctionCall(expr as FunctionCallNode);
       case 'PropertyAccess':
         return this.analyzePropertyAccess(expr as PropertyAccessNode);
+      case 'BuiltIn':
+        return this.analyzeBuiltIn(expr as BuiltInNode);
+      case 'Exists':
+        return this.analyzeExists(expr as ExistsNode);
+      case 'Fallback':
+        return this.analyzeFallback(expr as FallbackNode);
       default:
         return { type: 'unknown', nullable: true };
     }
   }
 
-  private analyzeVariableReference(node: VariableNode): TypeInfo {
+  private analyzeVariableReference(node: VariableNode, ignoreUndefined: boolean): TypeInfo {
     const variable = this.findVariable(node.name);
     if (variable) {
       variable.usages.push(node.position);
       return { type: variable.type, nullable: false };
     } else {
-      const message = `Undefined variable: ${node.name}`;
-      this.errors.push(message);
-      if (this.errorReporter) {
-        this.errorReporter.addError(message, node.range, 'FTL2001');
+      if (!ignoreUndefined) {
+        const message = `Undefined variable: ${node.name}`;
+        this.errors.push(message);
+        if (this.errorReporter) {
+          this.errorReporter.addError(message, node.range, 'FTL2001');
+        }
       }
       return { type: 'unknown', nullable: true };
     }
@@ -521,6 +556,61 @@ export class SemanticAnalyzer {
     this.analyzeExpression(node.object);
     // Simple property access - could be enhanced with more sophisticated type checking
     return { type: 'unknown', nullable: true };
+  }
+
+  private analyzeBuiltIn(node: BuiltInNode): TypeInfo {
+    this.analyzeExpression(node.target, true);
+    node.arguments?.forEach(arg => this.analyzeExpression(arg));
+
+    switch (node.name) {
+      case 'has_content':
+        return { type: 'boolean', nullable: false };
+      case 'string':
+      case 'default':
+        return { type: 'string', nullable: false };
+      default:
+        return { type: 'unknown', nullable: true };
+    }
+  }
+
+  private analyzeExists(node: ExistsNode): TypeInfo {
+    this.analyzeExpression(node.target, true);
+    return { type: 'boolean', nullable: false };
+  }
+
+  private analyzeFallback(node: FallbackNode): TypeInfo {
+    this.analyzeExpression(node.target, true);
+    return this.analyzeExpression(node.fallback);
+  }
+
+  private extractDefinedVariables(expr: ExpressionNode): string[] {
+    const vars: string[] = [];
+    const visit = (e: ExpressionNode): void => {
+      switch (e.type) {
+        case 'Exists': {
+          const exists = e as ExistsNode;
+          if (exists.target.type === 'Variable') {
+            vars.push((exists.target as VariableNode).name);
+          }
+          break;
+        }
+        case 'BuiltIn': {
+          const b = e as BuiltInNode;
+          if (b.name === 'has_content' && b.target.type === 'Variable') {
+            vars.push((b.target as VariableNode).name);
+          }
+          break;
+        }
+        case 'BinaryExpression': {
+          visit((e as BinaryExpressionNode).left);
+          visit((e as BinaryExpressionNode).right);
+          break;
+        }
+      }
+    };
+
+    visit(expr);
+    return vars;
   }
 
   private findVariable(name: string): VariableInfo | undefined {

@@ -17,6 +17,8 @@ import {
   BinaryExpressionNode,
   UnaryExpressionNode,
   LiteralNode,
+  ListLiteralNode,
+  HashLiteralNode,
   FunctionCallNode,
   PropertyAccessNode,
   BuiltInNode,
@@ -447,6 +449,13 @@ export class SemanticAnalyzer {
   }
 
   private analyzeMacroCall(node: MacroCallNode): void {
+    if (node.name === 'import' || node.name === 'include') {
+      node.parameters.forEach(param => this.analyzeExpression(param.value));
+      return;
+    }
+
+    node.parameters.forEach(param => this.analyzeExpression(param.value));
+
     const macro = this.findMacro(node.name);
     if (macro && macro.node) {
       macro.usages.push(node.position);
@@ -459,19 +468,26 @@ export class SemanticAnalyzer {
         parent: this.symbolTable.currentScope
       };
 
-      // Map parameters
-      macro.parameters.forEach((param, idx) => {
+      const positionalArgs = node.parameters.filter(param => !param.name);
+      let positionalIndex = 0;
+
+      macro.parameters.forEach(paramName => {
+        const namedArg = node.parameters.find(param => param.name === paramName);
+        let argument = namedArg;
+        if (!argument && positionalIndex < positionalArgs.length) {
+          argument = positionalArgs[positionalIndex];
+          positionalIndex++;
+        }
+
+        const definedAt = argument?.value?.position ?? node.position;
         const paramInfo: VariableInfo = {
-          name: param,
+          name: paramName,
           type: 'any',
           scope: 'local',
-          definedAt: node.position,
+          definedAt,
           usages: []
         };
-        if (node.parameters[idx]?.value) {
-          this.analyzeExpression(node.parameters[idx].value!);
-        }
-        macroScope.variables.set(param, paramInfo);
+        macroScope.variables.set(paramName, paramInfo);
       });
 
       const previousScope = this.symbolTable.currentScope;
@@ -593,6 +609,10 @@ export class SemanticAnalyzer {
         return this.analyzeExists(expr as ExistsNode);
       case 'Fallback':
         return this.analyzeFallback(expr as FallbackNode);
+      case 'ListLiteral':
+        return this.analyzeListLiteral(expr as ListLiteralNode);
+      case 'HashLiteral':
+        return this.analyzeHashLiteral(expr as HashLiteralNode);
       default:
         return { type: 'unknown', nullable: true };
     }
@@ -617,6 +637,22 @@ export class SemanticAnalyzer {
 
   private analyzeLiteral(node: LiteralNode): TypeInfo {
     return { type: node.dataType, nullable: false };
+  }
+
+  private analyzeListLiteral(node: ListLiteralNode): TypeInfo {
+    node.items.forEach(item => this.analyzeExpression(item));
+    return { type: 'sequence', nullable: false, enumerable: true };
+  }
+
+  private analyzeHashLiteral(node: HashLiteralNode): TypeInfo {
+    node.entries.forEach(entry => {
+      if (entry.keyExpression) {
+        this.analyzeExpression(entry.keyExpression);
+      }
+      this.analyzeExpression(entry.value);
+    });
+
+    return { type: 'hash', nullable: false };
   }
 
   private analyzeBinaryExpression(node: BinaryExpressionNode): TypeInfo {

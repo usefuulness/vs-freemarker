@@ -159,6 +159,57 @@ describe('FreeMarker Static Analyzer Integration', () => {
 
         expect(result.diagnostics.some(d => d.code === 'FTL2004' && d.message.includes('layout'))).toBe(false);
       });
+
+      test('parses hash and list literals without introducing placeholder variables', () => {
+        const template = '<#assign config = {"columns": ["name", "status"], "pageable": {"size": 20}}/>';
+        const result = analyzer.analyze(template);
+
+        expect(result.diagnostics.some(d => d.code === 'FTL2001' && /unknown/.test(d.message))).toBe(false);
+      });
+
+      test('treats macro-style import directive like standard import', () => {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-macro-import-'));
+        const projectDir = path.join(tmpDir, 'project');
+        fs.mkdirSync(projectDir, { recursive: true });
+        const batchPath = path.join(projectDir, 'batch.ftl');
+        fs.writeFileSync(
+          batchPath,
+          '<#macro result col entry>${col}${entry.properties.status!""}</#macro>' +
+            '<#macro rollbackImport type entry>${type}${entry.properties.status!""}</#macro>'
+        );
+
+        const template =
+          '<@import path="/project/batch.ftl" ns="batch" />' +
+          '<#assign col="result"/>' +
+          '<#assign entry = {"properties": {"status": "OPEN"}}/>' +
+          '<@batch.result col entry />' +
+          '<@batch.rollbackImport "DocGroupFile" entry />';
+        const mainPath = path.join(tmpDir, 'config.ftl');
+        fs.writeFileSync(mainPath, template);
+
+        analyzer.setTemplateRoots([tmpDir]);
+        const result = analyzer.analyze(template, mainPath);
+
+        expect(result.diagnostics.some(d => d.code === 'FTL2004')).toBe(false);
+        expect(result.diagnostics.some(d => d.code === 'FTL2001' && /unknown/.test(d.message))).toBe(false);
+      });
+
+      test('treats macro-style include directive like standard include', () => {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-macro-include-'));
+        const layoutsDir = path.join(tmpDir, 'layouts');
+        fs.mkdirSync(layoutsDir, { recursive: true });
+        const layoutPath = path.join(layoutsDir, 'main.ftl');
+        fs.writeFileSync(layoutPath, '<#macro layout title>${title}</#macro>');
+
+        const template = '<@include path="/layouts/main.ftl" />' + '<@layout title="Dashboard"></@layout>';
+        const mainPath = path.join(tmpDir, 'index.ftl');
+        fs.writeFileSync(mainPath, template);
+
+        analyzer.setTemplateRoots([tmpDir]);
+        const result = analyzer.analyze(template, mainPath);
+
+        expect(result.diagnostics.some(d => d.code === 'FTL2004' && d.message.includes('layout'))).toBe(false);
+      });
     });
 
   describe('Basic robustness', () => {

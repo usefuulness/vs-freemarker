@@ -16,6 +16,8 @@ interface DependencyEntry {
 interface CachedTemplate {
   content: string;
   ast?: TemplateNode;
+  mtimeMs: number;
+  size: number;
 }
 
 export interface AnalysisResult {
@@ -100,6 +102,7 @@ export class FreeMarkerStaticAnalyzer {
   private errorReporter: ErrorReporter = new ErrorReporter();
   private profiler: PerformanceProfiler = new PerformanceProfiler();
   private templateRoots: string[] = [process.cwd()];
+  private dependencyCache: Map<string, CachedTemplate> = new Map();
 
   constructor() {
     this.parser = new FreeMarkerParser([]);
@@ -118,6 +121,8 @@ export class FreeMarkerStaticAnalyzer {
     if (this.templateRoots.length === 0) {
       this.templateRoots = [process.cwd()];
     }
+
+    this.dependencyCache.clear();
   }
 
   public analyze(template: string, filePath?: string): AnalysisResult {
@@ -399,6 +404,21 @@ export class FreeMarkerStaticAnalyzer {
       return cache.get(normalized);
     }
 
+    let stats: fs.Stats;
+    try {
+      stats = fs.statSync(normalized);
+    } catch {
+      cache.set(normalized, undefined);
+      this.dependencyCache.delete(normalized);
+      return undefined;
+    }
+
+    const cached = this.dependencyCache.get(normalized);
+    if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
+      cache.set(normalized, cached);
+      return cached;
+    }
+
     try {
       const content = fs.readFileSync(normalized, 'utf8');
       let ast: TemplateNode | undefined;
@@ -412,11 +432,18 @@ export class FreeMarkerStaticAnalyzer {
         ast = undefined;
       }
 
-      const cached: CachedTemplate = { content, ast };
-      cache.set(normalized, cached);
-      return cached;
+      const updated: CachedTemplate = {
+        content,
+        ast,
+        mtimeMs: stats.mtimeMs,
+        size: stats.size
+      };
+      cache.set(normalized, updated);
+      this.dependencyCache.set(normalized, updated);
+      return updated;
     } catch {
       cache.set(normalized, undefined);
+      this.dependencyCache.delete(normalized);
       return undefined;
     }
   }

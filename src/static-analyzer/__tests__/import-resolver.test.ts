@@ -38,7 +38,7 @@ describe('ImportResolver', () => {
   describe('Basic functionality', () => {
     test('should handle simple import resolution', async () => {
       const template = '<#import "lib.ftl" as lib/>';
-      
+
       (mockFs.promises.access as unknown as jest.Mock).mockResolvedValue(undefined);
       (mockFs.promises.readFile as unknown as jest.Mock).mockResolvedValue('<#macro helper></#macro>');
       (mockFs.promises.stat as unknown as jest.Mock).mockResolvedValue({
@@ -64,6 +64,56 @@ describe('ImportResolver', () => {
     test('should create basic resolver', () => {
       expect(resolver).toBeDefined();
       expect(resolver.getDependencyGraph).toBeDefined();
+    });
+  });
+
+  describe('Cache behavior', () => {
+    test('evicts least recently used templates when the cache is full', async () => {
+      resolver = new ImportResolver(analyzer, {
+        basePath: '/project',
+        templateDirectories: ['templates'],
+        extensions: ['.ftl'],
+        maxDepth: 5,
+        followSymlinks: false,
+        cacheEnabled: true,
+        maxCacheSize: 2
+      });
+
+      (mockFs.promises.access as unknown as jest.Mock).mockResolvedValue(undefined);
+      const readFileMock = mockFs.promises.readFile as unknown as jest.Mock;
+      const statMock = mockFs.promises.stat as unknown as jest.Mock;
+
+      readFileMock.mockResolvedValue('<#-- template -->');
+      statMock.mockResolvedValue({
+        mtime: new Date('2024-01-01T00:00:00Z'),
+        isFile: () => true
+      } as any);
+
+      await resolver.resolveImports('/project/a.ftl');
+      await resolver.resolveImports('/project/b.ftl');
+
+      const normalizedA = path.resolve('/project/a.ftl').replace(/\\/g, '/');
+      const normalizedB = path.resolve('/project/b.ftl').replace(/\\/g, '/');
+
+      const cache = (resolver as any).cache as { size: number; has: (key: string) => boolean };
+      expect(cache.size).toBe(2);
+      expect(cache.has(normalizedA)).toBe(true);
+      expect(cache.has(normalizedB)).toBe(true);
+
+      readFileMock.mockClear();
+
+      // Access template A again to mark it as most recently used
+      await resolver.resolveImports('/project/a.ftl');
+      expect(readFileMock).not.toHaveBeenCalled();
+
+      await resolver.resolveImports('/project/c.ftl');
+
+      const normalizedC = path.resolve('/project/c.ftl').replace(/\\/g, '/');
+      expect(readFileMock).toHaveBeenCalledTimes(1);
+      expect(cache.size).toBe(2);
+      expect(cache.has(normalizedA)).toBe(true);
+      expect(cache.has(normalizedC)).toBe(true);
+      expect(cache.has(normalizedB)).toBe(false);
     });
   });
 });

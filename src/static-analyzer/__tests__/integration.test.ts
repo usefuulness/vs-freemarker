@@ -62,6 +62,30 @@ describe('FreeMarker Static Analyzer Integration', () => {
         expect(result.diagnostics.some(d => d.code === 'FTL4001')).toBe(true);
       });
 
+      test('reports missing transitive dependency as diagnostic', () => {
+        const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-transitive-'));
+        const projectDir = path.join(workspaceDir, 'project');
+        fs.mkdirSync(projectDir, { recursive: true });
+
+        const helpersPath = path.join(projectDir, 'helpers.ftl');
+        fs.writeFileSync(helpersPath, '<#include "/project/missing.ftl"/>');
+
+        const batchPath = path.join(projectDir, 'batch.ftl');
+        fs.writeFileSync(batchPath, '<#import "/project/helpers.ftl" as helpers/>');
+
+        const mainTemplate = '<#import "/project/batch.ftl" as batch/>';
+        const mainPath = path.join(workspaceDir, 'main.ftl');
+        fs.writeFileSync(mainPath, mainTemplate);
+
+        analyzer.setTemplateRoots([workspaceDir]);
+        const result = analyzer.analyze(mainTemplate, mainPath);
+
+        const diag = result.diagnostics.find(
+          d => d.code === 'FTL4001' && d.message.includes('missing.ftl')
+        );
+        expect(diag).toBeDefined();
+      });
+
       test('reports undefined variable as diagnostic', () => {
         const template = '${foo}';
         const result = analyzer.analyze(template);

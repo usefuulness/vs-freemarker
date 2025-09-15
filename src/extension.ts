@@ -14,6 +14,11 @@ export function activate(context: vscode.ExtensionContext): void {
   }
 
   context.subscriptions.push(
+    vscode.window.onDidChangeActiveTextEditor(editor => {
+      if (editor) {
+        refreshDiagnostics(editor.document);
+      }
+    }),
     vscode.workspace.onDidOpenTextDocument(refreshDiagnostics),
     vscode.workspace.onDidChangeTextDocument(e => refreshDiagnostics(e.document)),
     vscode.workspace.onDidCloseTextDocument(doc => diagnosticCollection.delete(doc.uri))
@@ -25,7 +30,7 @@ function refreshDiagnostics(document: vscode.TextDocument): void {
     return;
   }
 
-  const result = analyzer.analyze(document.getText());
+  const result = analyzer.analyze(document.getText(), document.uri.fsPath);
   const diagnostics = result.diagnostics.map(d => {
     const start = new vscode.Position(d.range.start.line - 1, d.range.start.character - 1);
     const end = new vscode.Position(d.range.end.line - 1, d.range.end.character - 1);

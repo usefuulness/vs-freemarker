@@ -98,6 +98,9 @@ const dependencyGraph = await resolver.resolveImports('/project/main.ftl', conte
 - `extensions` - File extensions to try when resolving imports
 - `maxDepth` - Maximum depth for dependency resolution
 - `cacheEnabled` - Enable/disable result caching
+- `maxCacheSize` - Maximum number of templates cached before evicting the least recently used entry
+
+Use `invalidateCache()` to manually clear cached entries or trigger the `FreeMarker: Clear Template Cache` command in VS Code when template roots change.
 
 ### Error Reporting
 

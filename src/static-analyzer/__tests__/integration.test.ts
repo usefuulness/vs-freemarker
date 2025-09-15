@@ -110,6 +110,16 @@ describe('FreeMarker Static Analyzer Integration', () => {
 
         expect(result.diagnostics.some(d => d.code === 'FTL2001' && d.message.includes('x'))).toBe(false);
       });
+
+      test('parses macro calls with parameters correctly', () => {
+        const template =
+          '<#macro layout title></#macro>' +
+          '<#macro include path></#macro>' +
+          '<@layout title="foo"></@layout>' +
+          '<@include path="bar"/>';
+        const result = analyzer.analyze(template);
+        expect(result.diagnostics.some(d => d.code === 'FTL2004' && /(title|path)/.test(d.message))).toBe(false);
+      });
     });
 
   describe('Basic robustness', () => {

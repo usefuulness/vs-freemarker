@@ -266,11 +266,13 @@ export class FreeMarkerParser {
 
   private parseMacroCall(): MacroCallNode {
     const nameParts: string[] = [];
-    while (!this.check(TokenType.DIRECTIVE_END) && !this.check(TokenType.SLASH) && !this.isAtEnd()) {
-      if (this.check(TokenType.IDENTIFIER) || this.check(TokenType.DOT)) {
-        nameParts.push(this.advance().value);
-      } else {
-        this.advance();
+
+    if (this.check(TokenType.IDENTIFIER)) {
+      nameParts.push(this.advance().value);
+      while (this.match(TokenType.DOT)) {
+        if (this.check(TokenType.IDENTIFIER)) {
+          nameParts.push('.' + this.advance().value);
+        }
       }
     }
 

@@ -9,7 +9,7 @@ describe('FreeMarker Static Analyzer Integration', () => {
   });
 
   describe('End-to-end analysis', () => {
-    test('should analyze basic FreeMarker template', () => {
+    test('should analyze basic FreeMarker template', async () => {
       const template = `
         <#assign title = "Test"/>
         <#if users??>
@@ -19,7 +19,7 @@ describe('FreeMarker Static Analyzer Integration', () => {
         </#if>
       `;
 
-      const result = analyzer.analyze(template);
+      const result = await analyzer.analyze(template);
 
       expect(result.ast).toBeDefined();
       expect(result.performance).toBeDefined();
@@ -27,7 +27,7 @@ describe('FreeMarker Static Analyzer Integration', () => {
       expect(result.diagnostics).toBeDefined();
     });
 
-    test('should not crash on complex template', () => {
+    test('should not crash on complex template', async () => {
       const template = `
         <#macro card user>
           <div>\${user.name}</div>
@@ -38,15 +38,15 @@ describe('FreeMarker Static Analyzer Integration', () => {
         <@card user=currentUser/>
       `;
 
-      expect(() => analyzer.analyze(template)).not.toThrow();
+      await expect(analyzer.analyze(template)).resolves.toBeDefined();
     });
 
-    test('should handle incremental analysis', () => {
+    test('should handle incremental analysis', async () => {
       const template1 = '<#assign x = 1/>';
       const template2 = '<#assign x = 1/><#assign y = 2/>';
 
-      const result1 = analyzer.analyze(template1);
-      const result2 = analyzer.analyzeIncremental(template2, [], result1);
+      const result1 = await analyzer.analyze(template1);
+      const result2 = await analyzer.analyzeIncremental(template2, [], result1);
 
       expect(result2).toBeDefined();
       expect(result2.semanticInfo).toBeDefined();
@@ -54,13 +54,13 @@ describe('FreeMarker Static Analyzer Integration', () => {
   });
 
   describe('Basic robustness', () => {
-    test('should handle simple malformed template', () => {
+    test('should handle simple malformed template', async () => {
       const template = '<#assign x = "test"/>${x}';
-      expect(() => analyzer.analyze(template)).not.toThrow();
+      await expect(analyzer.analyze(template)).resolves.toBeDefined();
     });
 
-    test('should handle empty template', () => {
-      expect(() => analyzer.analyze('')).not.toThrow();
+    test('should handle empty template', async () => {
+      await expect(analyzer.analyze('')).resolves.toBeDefined();
     });
   });
 });

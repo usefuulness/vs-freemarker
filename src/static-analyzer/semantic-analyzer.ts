@@ -21,6 +21,7 @@ import {
 } from './parser';
 
 import { SemanticInfo, VariableInfo, MacroInfo, FunctionInfo, ImportInfo } from './index';
+import { ErrorReporter } from './error-reporter';
 
 export interface Scope {
   type: 'global' | 'local' | 'macro' | 'function' | 'loop';
@@ -44,6 +45,7 @@ export interface TypeInfo {
 }
 
 export class SemanticAnalyzer {
+  private errorReporter?: ErrorReporter;
   private symbolTable: SymbolTable = {
     globalScope: {
       type: 'global',
@@ -70,13 +72,14 @@ export class SemanticAnalyzer {
   private errors: string[] = [];
   private warnings: string[] = [];
 
-  public analyze(ast: TemplateNode): SemanticInfo {
+  public analyze(ast: TemplateNode, errorReporter?: ErrorReporter): SemanticInfo {
     this.initializeAnalysis();
-    
+    this.errorReporter = errorReporter;
+
     if (ast) {
       this.analyzeNode(ast);
     }
-    
+
     return this.semanticInfo;
   }
 
@@ -436,7 +439,11 @@ export class SemanticAnalyzer {
       variable.usages.push(node.position);
       return { type: variable.type, nullable: false };
     } else {
-      this.errors.push(`Undefined variable: ${node.name}`);
+      const message = `Undefined variable: ${node.name}`;
+      this.errors.push(message);
+      if (this.errorReporter) {
+        this.errorReporter.addError(message, node.range, 'FTL2001');
+      }
       return { type: 'unknown', nullable: true };
     }
   }
@@ -498,10 +505,14 @@ export class SemanticAnalyzer {
       
       // Analyze arguments
       node.arguments.forEach(arg => this.analyzeExpression(arg));
-      
+
       return { type: functionInfo.returnType, nullable: false };
     } else {
-      this.errors.push(`Undefined function: ${node.name}`);
+      const message = `Undefined function: ${node.name}`;
+      this.errors.push(message);
+      if (this.errorReporter) {
+        this.errorReporter.addError(message, node.range, 'FTL2003');
+      }
       return { type: 'unknown', nullable: true };
     }
   }

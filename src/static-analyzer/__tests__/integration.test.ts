@@ -51,7 +51,28 @@ describe('FreeMarker Static Analyzer Integration', () => {
       expect(result2).toBeDefined();
       expect(result2.semanticInfo).toBeDefined();
     });
-  });
+
+      test('reports missing import as diagnostic', () => {
+        const template = '<#import "missing.ftl" as m/>';
+        const result = analyzer.analyze(template, '/project/main.ftl');
+
+        expect(result.diagnostics.some(d => d.code === 'FTL4001')).toBe(true);
+      });
+
+      test('reports undefined variable as diagnostic', () => {
+        const template = '${foo}';
+        const result = analyzer.analyze(template);
+
+        expect(result.diagnostics.some(d => d.code === 'FTL2001')).toBe(true);
+      });
+
+      test('reports syntax error as diagnostic', () => {
+        const template = '${foo';
+        const result = analyzer.analyze(template);
+
+        expect(result.diagnostics.some(d => d.code === 'FTL1005')).toBe(true);
+      });
+    });
 
   describe('Basic robustness', () => {
     test('should handle simple malformed template', () => {

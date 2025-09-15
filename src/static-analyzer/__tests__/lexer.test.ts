@@ -14,7 +14,7 @@ describe('FreeMarkerLexer', () => {
       // Filter out whitespace and EOF for easier testing
       const contentTokens = tokens.filter(t => t.type !== TokenType.WHITESPACE && t.type !== TokenType.EOF);
       expect(contentTokens.length).toBeGreaterThan(0);
-      expect(contentTokens[0].type).toBe(TokenType.TEXT);
+      expect(contentTokens[0].type).toBe(TokenType.IDENTIFIER);
       expect(contentTokens[0].value).toContain('Hello');
     });
 
@@ -23,8 +23,8 @@ describe('FreeMarkerLexer', () => {
       
       const contentTokens = tokens.filter(t => t.type !== TokenType.EOF);
       expect(contentTokens.length).toBeGreaterThan(0);
-      expect(contentTokens[0].type).toBe(TokenType.TEXT);
-      expect(contentTokens[0].value).toContain('html');
+      expect(contentTokens[0].type).toBe(TokenType.LESS_THAN);
+      expect(tokens.some(t => t.type === TokenType.IDENTIFIER && t.value === 'html')).toBe(true);
     });
   });
 

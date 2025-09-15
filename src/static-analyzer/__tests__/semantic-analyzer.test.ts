@@ -4,18 +4,17 @@ import { SemanticAnalyzer } from '../semantic-analyzer';
 
 describe('SemanticAnalyzer', () => {
   let lexer: FreeMarkerLexer;
-  let parser: FreeMarkerParser;
   let analyzer: SemanticAnalyzer;
 
   beforeEach(() => {
     lexer = new FreeMarkerLexer();
-    parser = new FreeMarkerParser();
     analyzer = new SemanticAnalyzer();
   });
 
   function analyzeTemplate(template: string) {
     const tokens = lexer.tokenize(template);
-    const ast = parser.parse(tokens);
+    const parser = new FreeMarkerParser(tokens);
+    const ast = parser.parse();
     return analyzer.analyze(ast);
   }
 
@@ -55,7 +54,7 @@ describe('SemanticAnalyzer', () => {
       const template = `
         <#assign title = "Test"/>
         <#macro card user>
-          <div>${user.name}</div>
+          <div>\${user.name}</div>
         </#macro>
         <#if users??>
           <#list users as user>

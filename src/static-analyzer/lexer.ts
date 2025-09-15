@@ -535,7 +535,8 @@ export class FreeMarkerLexer {
   private addToken(type: TokenType, value: string): void {
     const position = this.getCurrentPosition();
     position.character -= value.length;
-    
+    position.offset -= value.length;
+
     this.tokens.push({
       type,
       value,

@@ -62,8 +62,11 @@ describe('FreeMarker Static Analyzer Integration', () => {
       test('reports undefined variable as diagnostic', () => {
         const template = '${foo}';
         const result = analyzer.analyze(template);
-
-        expect(result.diagnostics.some(d => d.code === 'FTL2001')).toBe(true);
+        const diag = result.diagnostics.find(d => d.code === 'FTL2001');
+        expect(diag).toBeDefined();
+        expect(diag?.range.start.line).toBe(1);
+        expect(diag?.range.start.character).toBe(3);
+        expect(diag?.range.end.character).toBe(6);
       });
 
       test('reports syntax error as diagnostic', () => {

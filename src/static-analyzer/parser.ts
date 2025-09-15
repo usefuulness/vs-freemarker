@@ -658,53 +658,69 @@ export class FreeMarkerParser {
 
   private parsePrimaryExpression(): ExpressionNode {
     if (this.match(TokenType.STRING_LITERAL)) {
+      const token = this.previous();
+      const start = token.position;
+      const end = {
+        line: start.line,
+        character: start.character + token.length,
+        offset: start.offset + token.length
+      };
       return {
         type: 'Literal',
-        value: this.previous().value,
+        value: token.value,
         dataType: 'string',
-        position: this.getCurrentPosition(),
-        range: {
-          start: this.getCurrentPosition(),
-          end: this.getCurrentPosition()
-        }
+        position: start,
+        range: { start, end }
       } as any;
     }
-    
+
     if (this.match(TokenType.NUMBER_LITERAL)) {
+      const token = this.previous();
+      const start = token.position;
+      const end = {
+        line: start.line,
+        character: start.character + token.length,
+        offset: start.offset + token.length
+      };
       return {
         type: 'Literal',
-        value: parseFloat(this.previous().value),
+        value: parseFloat(token.value),
         dataType: 'number',
-        position: this.getCurrentPosition(),
-        range: {
-          start: this.getCurrentPosition(),
-          end: this.getCurrentPosition()
-        }
+        position: start,
+        range: { start, end }
       } as any;
     }
-    
+
     if (this.match(TokenType.BOOLEAN_LITERAL)) {
+      const token = this.previous();
+      const start = token.position;
+      const end = {
+        line: start.line,
+        character: start.character + token.length,
+        offset: start.offset + token.length
+      };
       return {
         type: 'Literal',
-        value: this.previous().value === 'true',
+        value: token.value === 'true',
         dataType: 'boolean',
-        position: this.getCurrentPosition(),
-        range: {
-          start: this.getCurrentPosition(),
-          end: this.getCurrentPosition()
-        }
+        position: start,
+        range: { start, end }
       } as any;
     }
-    
+
     if (this.match(TokenType.IDENTIFIER)) {
+      const token = this.previous();
+      const start = token.position;
+      const end = {
+        line: start.line,
+        character: start.character + token.length,
+        offset: start.offset + token.length
+      };
       return {
         type: 'Variable',
-        name: this.previous().value,
-        position: this.getCurrentPosition(),
-        range: {
-          start: this.getCurrentPosition(),
-          end: this.getCurrentPosition()
-        }
+        name: token.value,
+        position: start,
+        range: { start, end }
       } as any;
     }
     

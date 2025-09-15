@@ -2,7 +2,7 @@ name: Package & Release VSIX
 on:
   push:
     tags:
-      - 'v*'               # pushes like v0.0.1 trigger a release
+      - 'V*'               # pushes like v0.0.1 trigger a release
 
 permissions:
   contents: write          # needed to upload assets

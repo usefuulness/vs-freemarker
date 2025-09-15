@@ -1,3 +1,5 @@
+import * as path from 'path';
+
 import {
   TemplateNode,
   ASTNode,
@@ -69,14 +71,63 @@ export class SemanticAnalyzer {
   
   private errors: string[] = [];
   private warnings: string[] = [];
+  private cache: Map<string, SemanticInfo> = new Map();
+  private processing: Set<string> = new Set();
+  private completed: Set<string> = new Set();
 
-  public analyze(ast: TemplateNode): SemanticInfo {
-    this.initializeAnalysis();
-    
-    if (ast) {
-      this.analyzeNode(ast);
+  public analyze(ast: TemplateNode, filePath?: string): SemanticInfo {
+    const normalizedPath = filePath ? this.normalizePath(filePath) : undefined;
+    const isRootAnalysis = this.processing.size === 0;
+
+    if (isRootAnalysis) {
+      this.completed.clear();
     }
-    
+
+    if (normalizedPath && this.processing.has(normalizedPath)) {
+      const message = `Circular dependency detected while analyzing '${normalizedPath}'`;
+      this.errors = [message];
+      this.warnings = [];
+
+      const cached = this.cache.get(normalizedPath);
+      if (cached) {
+        this.semanticInfo = cached;
+        return cached;
+      }
+
+      const emptyInfo = this.createEmptySemanticInfo();
+      this.semanticInfo = emptyInfo;
+      return emptyInfo;
+    }
+
+    if (normalizedPath && this.completed.has(normalizedPath)) {
+      const cached = this.cache.get(normalizedPath);
+      if (cached) {
+        this.errors = [];
+        this.warnings = [];
+        this.semanticInfo = cached;
+        this.completed.add(normalizedPath);
+        return cached;
+      }
+    }
+
+    this.initializeAnalysis();
+
+    if (normalizedPath) {
+      this.processing.add(normalizedPath);
+    }
+
+    try {
+      if (ast) {
+        this.analyzeNode(ast);
+      }
+    } finally {
+      if (normalizedPath) {
+        this.processing.delete(normalizedPath);
+        this.completed.add(normalizedPath);
+        this.cache.set(normalizedPath, this.semanticInfo);
+      }
+    }
+
     return this.semanticInfo;
   }
 
@@ -93,17 +144,21 @@ export class SemanticAnalyzer {
       currentScope: globalScope
     };
 
-    this.semanticInfo = {
+    this.semanticInfo = this.createEmptySemanticInfo();
+
+    this.errors = [];
+    this.warnings = [];
+    this.addBuiltinSymbols();
+  }
+
+  private createEmptySemanticInfo(): SemanticInfo {
+    return {
       variables: new Map(),
       macros: new Map(),
       functions: new Map(),
       includes: [],
       imports: []
     };
-
-    this.errors = [];
-    this.warnings = [];
-    this.addBuiltinSymbols();
   }
 
   private addBuiltinSymbols(): void {
@@ -560,5 +615,9 @@ export class SemanticAnalyzer {
 
   public getWarnings(): string[] {
     return this.warnings;
+  }
+
+  private normalizePath(filePath: string): string {
+    return path.resolve(filePath).replace(/\\/g, '/');
   }
 }

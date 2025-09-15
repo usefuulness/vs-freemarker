@@ -88,7 +88,7 @@ export class FreeMarkerStaticAnalyzer {
     this.parser = new FreeMarkerParser([]);
   }
 
-  public analyze(template: string, _filePath?: string): AnalysisResult {
+  public analyze(template: string, filePath?: string): AnalysisResult {
     this.profiler.start();
     
     try {
@@ -105,7 +105,7 @@ export class FreeMarkerStaticAnalyzer {
 
       // Semantic analysis
       this.profiler.startPhase('semanticAnalysis');
-      const semanticInfo = this.semanticAnalyzer.analyze(ast);
+      const semanticInfo = this.semanticAnalyzer.analyze(ast, filePath);
       this.profiler.endPhase('semanticAnalysis');
 
       // Collect diagnostics

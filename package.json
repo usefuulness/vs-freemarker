@@ -13,7 +13,7 @@
         "url": "https://github.com/usefuulness/vs-freemarker.git"
     },
     "engines": {
-        "vscode": "^0.10.1"
+        "vscode": "^1.104.0"
     },
     "categories": [
         "Languages"

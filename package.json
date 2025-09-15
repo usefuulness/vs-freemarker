@@ -1,12 +1,12 @@
 {
     "name": "FreeMarker",
     "displayName": "FreeMarker",
-    "description": "Syntax highlight for FreeMarker",
-    "version": "0.0.9",
-    "publisher": "dcortes92",
+    "description": "Language Support for FreeMarker",
+    "version": "9.0.3",
+    "publisher": "usefuulness",
     "repository": {
         "type": "git",
-        "url": "https://github.com/dcortes92/vs-freemarker.git"
+        "url": "https://github.com/usefuulness/vs-freemarker.git"
     },
     "engines": {
         "vscode": "^0.10.1"
@@ -23,7 +23,8 @@
                     "ftl"
                 ],
                 "extensions": [
-                    ".ftl"
+                    ".ftl",
+                    ".html"
                 ],
                 "configuration": "./ftl.configuration.json"
             }
@@ -47,13 +48,33 @@
         ]
     },
     "bugs": {
-        "url": "https://github.com/dcortes92/vs-freemarker/issues"
+        "url": "https://github.com/usefuulness/vs-freemarker/issues"
     },
-    "homepage": "https://github.com/dcortes92/vs-freemarker#readme",
+    "homepage": "https://github.com/usefuulness/vs-freemarker#readme",
     "dependencies": {},
-    "devDependencies": {},
+    "devDependencies": {
+        "@types/jest": "^29.5.0",
+        "@types/node": "^18.0.0",
+        "@typescript-eslint/eslint-plugin": "^6.0.0",
+        "@typescript-eslint/parser": "^6.0.0",
+        "eslint": "^8.50.0",
+        "jest": "^29.5.0",
+        "rimraf": "^5.0.0",
+        "ts-jest": "^29.1.0",
+        "typescript": "^5.0.0",
+        "@vscode/vsce": "^2.22.0"
+    },
     "scripts": {
-        "test": "echo \"Error: no test specified\" && exit 1"
+        "build": "tsc",
+        "test": "jest",
+        "test:watch": "jest --watch",
+        "test:coverage": "jest --coverage",
+        "lint": "eslint src/**/*.ts",
+        "lint:fix": "eslint src/**/*.ts --fix",
+        "clean": "rimraf out dist",
+        "pretest": "npm run build",
+        "package": "vsce package",
+        "vscode:prepublish": "echo 'Extension ready for publishing - syntax highlighting only'"
     },
     "keywords": [
         "visual",
@@ -63,7 +84,8 @@
         "freemarker",
         "ftl"
     ],
-    "author": "Daniel Cortes <dcortes1892@gmail.com> (http://dcortes92.github.io/)",
+    "author": "Alfred @ (offone.dev) && Daniel Cortes <dcortes1892@gmail.com> (http://dcortes92.github.io/)",
     "license": "MIT",
-    "icon": "images/logo.svg"
+    "icon": "images/logo.png",
+    "packageManager": "pnpm@10.11.0+sha512.6540583f41cc5f628eb3d9773ecee802f4f9ef9923cc45b69890fb47991d4b092964694ec3a4f738a420c918a333062c8b925d312f42e4f0c263eb603551f977"
 }

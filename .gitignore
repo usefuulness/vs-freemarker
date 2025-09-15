@@ -1,4 +1,7 @@
+# ignore it
 *.vsix
 *.vscode-test
 node_modules
 npm-debug.log
+pnpm-lock.yaml
+out

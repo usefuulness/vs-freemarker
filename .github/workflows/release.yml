@@ -1,14 +1,20 @@
-name: Package & Release VSIX
+name: Test, Build & Release VSIX
 on:
   push:
     tags:
       - 'V*'               # pushes like v0.0.1 trigger a release
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., V1.0.0)'
+        required: true
+        type: string
 
 permissions:
   contents: write          # needed to upload assets
 
 jobs:
-  build:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -17,13 +23,72 @@ jobs:
         with:
           node-version: 20
 
-      # if the repo has dependencies, this will install them
-      - name: Install deps (if any)
+      - name: Install dependencies
         run: |
-          if [ -f package-lock.json ]; then npm ci; fi
+          if [ -f package-lock.json ]; then 
+            npm ci
+          elif [ -f package.json ]; then
+            npm install
+          fi
+
+      - name: Run linting (if configured)
+        run: |
+          if grep -q '"lint"' package.json; then
+            npm run lint
+          else
+            echo "No linting configured, skipping..."
+          fi
+
+      - name: Run tests (if configured)
+        run: |
+          if grep -q '"test"' package.json && ! grep -q 'Error: no test specified' package.json; then
+            npm test
+          else
+            echo "No tests configured, skipping..."
+          fi
+
+      - name: Build TypeScript (if configured)
+        run: |
+          if [ -f tsconfig.json ]; then
+            if grep -q '"build"' package.json; then
+              npm run build
+            else
+              npx tsc
+            fi
+          else
+            echo "No TypeScript configuration found, skipping build..."
+          fi
+
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then 
+            npm ci
+          elif [ -f package.json ]; then
+            npm install
+          fi
 
       - name: Install vsce
         run: npm i -g @vscode/vsce
+        
+      - name: Build TypeScript (if configured)
+        run: |
+          if [ -f tsconfig.json ]; then
+            if grep -q '"build"' package.json; then
+              npm run build
+            else
+              npx tsc
+            fi
+          fi
         
       - name: Ensure PNG icon (replace SVG)
         run: |
@@ -45,3 +110,18 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: "*.vsix"
+          generate_release_notes: true
+          body: |
+            ## FreeMarker Extension Release
+            
+            This release includes enhanced FreeMarker language support with:
+            - 🔍 Improved syntax highlighting
+            - 📦 Static analysis capabilities
+            - ⚡ Better performance
+            - 🛡️ Enhanced error detection
+            
+            ### Installation
+            Download the `.vsix` file and install it in VS Code using:
+            ```
+            code --install-extension *.vsix
+            ```

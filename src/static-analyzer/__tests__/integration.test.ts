@@ -145,6 +145,16 @@ describe('FreeMarker Static Analyzer Integration', () => {
         expect(result.diagnostics.some(d => d.code === 'FTL2004' && /(title|path)/.test(d.message))).toBe(false);
       });
 
+      test('handles recursive macro calls without infinite recursion', () => {
+        const template = [
+          '<#macro first><@second/></#macro>',
+          '<#macro second><@first/></#macro>',
+          '<@first/>'
+        ].join('');
+
+        expect(() => analyzer.analyze(template)).not.toThrow();
+      });
+
       test('makes macros from included templates available', () => {
         const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-include-'));
         const layoutsDir = path.join(tmpDir, 'layouts');

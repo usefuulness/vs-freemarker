@@ -91,6 +91,7 @@ export class SemanticAnalyzer {
   private errors: string[] = [];
   private warnings: string[] = [];
   private context: AnalysisContext = { templateRoots: [] };
+  private activeMacroNodes: Set<MacroNode> = new Set();
 
   public analyze(
     ast: TemplateNode,
@@ -140,6 +141,7 @@ export class SemanticAnalyzer {
 
     this.errors = [];
     this.warnings = [];
+    this.activeMacroNodes.clear();
     this.addBuiltinSymbols();
   }
 
@@ -517,6 +519,13 @@ export class SemanticAnalyzer {
     const macro = this.findMacro(node.name);
     if (macro && macro.node) {
       macro.usages.push(node.position);
+      const macroNode = macro.node;
+
+      if (this.activeMacroNodes.has(macroNode)) {
+        return;
+      }
+
+      this.activeMacroNodes.add(macroNode);
       const macroScope: Scope = {
         type: 'macro',
         name: macro.name,
@@ -558,8 +567,12 @@ export class SemanticAnalyzer {
 
       const previousScope = this.symbolTable.currentScope;
       this.symbolTable.currentScope = macroScope;
-      macro.node.body.forEach(child => this.analyzeNode(child));
-      this.symbolTable.currentScope = previousScope;
+      try {
+        macroNode.body.forEach(child => this.analyzeNode(child));
+      } finally {
+        this.symbolTable.currentScope = previousScope;
+        this.activeMacroNodes.delete(macroNode);
+      }
 
       // Promote variables defined in macro scope to current scope
       macroScope.variables.forEach((info, name) => {

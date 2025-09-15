@@ -3,6 +3,7 @@ import {
   ASTNode,
   DirectiveNode,
   MacroNode,
+  MacroCallNode,
   FunctionNode,
   VariableNode,
   AssignmentNode,
@@ -22,6 +23,10 @@ import {
   ExistsNode,
   FallbackNode
 } from './parser';
+
+import { FreeMarkerLexer } from './lexer';
+import { FreeMarkerParser } from './parser';
+import * as fs from 'fs';
 
 import { SemanticInfo, VariableInfo, MacroInfo, FunctionInfo, ImportInfo } from './index';
 import { ErrorReporter } from './error-reporter';
@@ -190,6 +195,9 @@ export class SemanticAnalyzer {
       case 'Include':
         this.analyzeInclude(node as IncludeNode);
         break;
+      case 'MacroCall':
+        this.analyzeMacroCall(node as MacroCallNode);
+        break;
       case 'Directive':
         this.analyzeDirective(node as DirectiveNode);
         break;
@@ -230,7 +238,8 @@ export class SemanticAnalyzer {
       name: node.name,
       parameters: node.parameters,
       definedAt: node.position,
-      usages: []
+      usages: [],
+      node
     };
 
     this.symbolTable.currentScope.macros.set(node.name, macroInfo);
@@ -414,6 +423,55 @@ export class SemanticAnalyzer {
     this.analyzeExpression(node.expression);
   }
 
+  private analyzeMacroCall(node: MacroCallNode): void {
+    const macro = this.findMacro(node.name);
+    if (macro && macro.node) {
+      macro.usages.push(node.position);
+      const macroScope: Scope = {
+        type: 'macro',
+        name: macro.name,
+        variables: new Map(),
+        macros: new Map(),
+        functions: new Map(),
+        parent: this.symbolTable.currentScope
+      };
+
+      // Map parameters
+      macro.parameters.forEach((param, idx) => {
+        const paramInfo: VariableInfo = {
+          name: param,
+          type: 'any',
+          scope: 'local',
+          definedAt: node.position,
+          usages: []
+        };
+        if (node.parameters[idx]?.value) {
+          this.analyzeExpression(node.parameters[idx].value!);
+        }
+        macroScope.variables.set(param, paramInfo);
+      });
+
+      const previousScope = this.symbolTable.currentScope;
+      this.symbolTable.currentScope = macroScope;
+      macro.node.body.forEach(child => this.analyzeNode(child));
+      this.symbolTable.currentScope = previousScope;
+
+      // Promote variables defined in macro scope to current scope
+      macroScope.variables.forEach((info, name) => {
+        if (!previousScope.variables.has(name)) {
+          previousScope.variables.set(name, info);
+          this.semanticInfo.variables.set(name, info);
+        }
+      });
+    } else {
+      const message = `Undefined macro: ${node.name}`;
+      this.errors.push(message);
+      if (this.errorReporter) {
+        this.errorReporter.addError(message, node.range, 'FTL2004');
+      }
+    }
+  }
+
   private analyzeImport(node: ImportNode): void {
     const importInfo: ImportInfo = {
       path: node.path,
@@ -421,6 +479,31 @@ export class SemanticAnalyzer {
       resolvedPath: node.resolvedPath
     };
     this.semanticInfo.imports.push(importInfo);
+
+    const importPath = node.resolvedPath || node.path;
+    try {
+      if (fs.existsSync(importPath)) {
+        const content = fs.readFileSync(importPath, 'utf8');
+        const lexer = new FreeMarkerLexer();
+        const tokens = lexer.tokenize(content);
+        const parser = new FreeMarkerParser(tokens);
+        const ast = parser.parse();
+        const analyzer = new SemanticAnalyzer();
+        const info = analyzer.analyze(ast);
+        info.macros.forEach((m, name) => {
+          const namespaced = node.alias ? `${node.alias}.${name}` : name;
+          const macroInfo: MacroInfo = { ...m, name: namespaced };
+          this.symbolTable.currentScope.macros.set(namespaced, macroInfo);
+          this.semanticInfo.macros.set(namespaced, macroInfo);
+        });
+      } else if (this.errorReporter) {
+        this.errorReporter.addError(`Import not found: ${node.path}`, node.range, 'FTL4001');
+      }
+    } catch (err) {
+      if (this.errorReporter) {
+        this.errorReporter.addError(`Failed to import ${node.path}: ${(err as Error).message}`, node.range, 'FTL4001');
+      }
+    }
   }
 
   private analyzeInclude(node: IncludeNode): void {

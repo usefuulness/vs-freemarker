@@ -1,5 +1,5 @@
 import { FreeMarkerLexer } from './lexer';
-import { FreeMarkerParser, TemplateNode } from './parser';
+import { FreeMarkerParser, TemplateNode, MacroNode } from './parser';
 import { SemanticAnalyzer } from './semantic-analyzer';
 import { ErrorReporter } from './error-reporter';
 import { PerformanceProfiler } from './performance-profiler';
@@ -53,6 +53,7 @@ export interface MacroInfo {
   parameters: string[];
   definedAt: Position;
   usages: Position[];
+  node?: MacroNode;
 }
 
 export interface FunctionInfo {

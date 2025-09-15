@@ -36,6 +36,13 @@ export interface FunctionNode extends ASTNode {
   returnType?: string;
 }
 
+export interface MacroCallNode extends ASTNode {
+  type: 'MacroCall';
+  name: string;
+  parameters: ParameterNode[];
+  body?: ASTNode[];
+}
+
 export interface InterpolationNode extends ASTNode {
   type: 'Interpolation';
   expression: ExpressionNode;
@@ -200,6 +207,8 @@ export class FreeMarkerParser {
   private parseTopLevel(): ASTNode | null {
     if (this.match(TokenType.DIRECTIVE_START)) {
       return this.parseDirective();
+    } else if (this.match(TokenType.MACRO_START)) {
+      return this.parseMacroCall();
     } else if (this.match(TokenType.INTERPOLATION_START)) {
       return this.parseInterpolation();
     } else if (this.match(TokenType.TEXT)) {
@@ -255,9 +264,42 @@ export class FreeMarkerParser {
     } as DirectiveNode;
   }
 
+  private parseMacroCall(): MacroCallNode {
+    const nameParts: string[] = [];
+    while (!this.check(TokenType.DIRECTIVE_END) && !this.check(TokenType.SLASH) && !this.isAtEnd()) {
+      if (this.check(TokenType.IDENTIFIER) || this.check(TokenType.DOT)) {
+        nameParts.push(this.advance().value);
+      } else {
+        this.advance();
+      }
+    }
+
+    const name = nameParts.join('');
+    const parameters = this.parseParameters();
+    const selfClosing = this.match(TokenType.SLASH);
+    this.match(TokenType.DIRECTIVE_END);
+    let body: ASTNode[] | undefined;
+    if (!selfClosing) {
+      body = this.parseDirectiveBody();
+    }
+
+    return {
+      type: 'MacroCall',
+      name,
+      parameters,
+      body,
+      position: this.getCurrentPosition(),
+      range: {
+        start: this.getCurrentPosition(),
+        end: this.getCurrentPosition()
+      }
+    };
+  }
+
   private parseAssignment(): AssignmentNode | null {
+    this.skipWhitespace();
     const variableName = this.advance().value;
-    
+
     if (!this.match(TokenType.ASSIGN)) {
       return null;
     }
@@ -279,10 +321,12 @@ export class FreeMarkerParser {
   }
 
   private parseImport(): ImportNode {
+    this.skipWhitespace();
     const path = this.advance().value;
     let alias = '';
-    
+
     if (this.match(TokenType.AS)) {
+      this.skipWhitespace();
       alias = this.advance().value;
     }
     
@@ -304,6 +348,7 @@ export class FreeMarkerParser {
   }
 
   private parseInclude(): IncludeNode {
+    this.skipWhitespace();
     const path = this.advance().value;
     this.match(TokenType.DIRECTIVE_END);
     
@@ -431,6 +476,7 @@ export class FreeMarkerParser {
   }
 
   private parseMacro(): MacroNode {
+    this.skipWhitespace();
     const name = this.advance().value;
     const parameters: string[] = [];
     
@@ -460,6 +506,7 @@ export class FreeMarkerParser {
   }
 
   private parseFunction(): FunctionNode {
+    this.skipWhitespace();
     const name = this.advance().value;
     const parameters: string[] = [];
     
@@ -857,8 +904,11 @@ export class FreeMarkerParser {
 
   private parseParameters(): ParameterNode[] {
     const parameters: ParameterNode[] = [];
-    
+
     while (!this.check(TokenType.DIRECTIVE_END) && !this.isAtEnd()) {
+      if (this.check(TokenType.SLASH)) {
+        break;
+      }
       const name = this.advance().value;
       let value: ExpressionNode | undefined;
       
@@ -907,7 +957,7 @@ export class FreeMarkerParser {
   }
 
   private checkDirectiveEnd(): boolean {
-    return this.check(TokenType.DIRECTIVE_START) &&
+    return (this.check(TokenType.DIRECTIVE_START) || this.check(TokenType.MACRO_START)) &&
            this.tokens[this.current + 1]?.value?.startsWith('/');
   }
 

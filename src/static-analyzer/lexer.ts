@@ -399,6 +399,18 @@ export class FreeMarkerLexer {
       const name = '/' + this.content.slice(start, this.position);
       this.addToken(TokenType.IDENTIFIER, name);
       return;
+    } else if (this.peek() === '/' && this.peekNext() === '@') {
+      this.advance(); // consume /
+      this.advance(); // consume @
+      this.inDirective = true;
+      this.addToken(TokenType.MACRO_START, '<@');
+      const start = this.position;
+      while (this.isAlphaNumeric(this.peek())) {
+        this.advance();
+      }
+      const name = '/' + this.content.slice(start, this.position);
+      this.addToken(TokenType.IDENTIFIER, name);
+      return;
     } else if (this.peek() === '@') {
       this.advance(); // consume @
       this.inDirective = true;

@@ -1,5 +1,8 @@
 import { FreeMarkerStaticAnalyzer } from '../index';
 import { ImportResolver } from '../import-resolver';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 describe('FreeMarker Static Analyzer Integration', () => {
   let analyzer: FreeMarkerStaticAnalyzer;
@@ -93,6 +96,19 @@ describe('FreeMarker Static Analyzer Integration', () => {
         const result = analyzer.analyze(template);
         expect(result.diagnostics.some(d => d.message.includes('attrName'))).toBe(false);
         expect(result.diagnostics.some(d => d.message.includes('attrVal'))).toBe(false);
+      });
+
+      test('imports macro and applies assigned variables globally', () => {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-'));
+        const macroPath = path.join(tmpDir, 'macros.ftl');
+        fs.writeFileSync(macroPath, '<#macro init><#assign x=1></#macro>');
+
+        const mainTemplate = `<#import "${macroPath}" as m/><@m.init/>\${x}`;
+        const mainPath = path.join(tmpDir, 'main.ftl');
+        fs.writeFileSync(mainPath, mainTemplate);
+        const result = analyzer.analyze(mainTemplate, mainPath);
+
+        expect(result.diagnostics.some(d => d.code === 'FTL2001' && d.message.includes('x'))).toBe(false);
       });
     });
 

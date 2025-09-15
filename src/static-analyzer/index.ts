@@ -106,10 +106,12 @@ export class FreeMarkerStaticAnalyzer {
 
   constructor() {
     this.parser = new FreeMarkerParser([]);
+    this.semanticAnalyzer.setErrorReporter(this.errorReporter);
   }
 
-  public async analyze(template: string, _filePath?: string): Promise<AnalysisResult> {
+  public async analyze(template: string, filePath?: string): Promise<AnalysisResult> {
     this.profiler.start();
+    this.errorReporter.clear();
 
     try {
       // Tokenize
@@ -145,8 +147,14 @@ export class FreeMarkerStaticAnalyzer {
 
       // Semantic analysis
       this.profiler.startPhase('semanticAnalysis');
-      const semanticInfo = this.semanticAnalyzer.analyze(ast, filePath);
+      const semanticInfo = this.semanticAnalyzer.analyze(ast, filePath, {
+        filePath,
+        templateRoots: this.templateRoots
+      });
       this.profiler.endPhase('semanticAnalysis');
+
+      this.checkBasicSyntax(template);
+      this.validateDependencies(template, ast, filePath);
 
       // Collect diagnostics
       const diagnostics = this.errorReporter.getDiagnostics();
@@ -189,6 +197,16 @@ export class FreeMarkerStaticAnalyzer {
     // For now, perform full analysis
     // In the future, this could be optimized for incremental updates
     return this.analyze(template);
+  }
+
+  public setTemplateRoots(roots: string[]): void {
+    if (!Array.isArray(roots) || roots.length === 0) {
+      this.templateRoots = [process.cwd()];
+    } else {
+      this.templateRoots = roots.map(root => path.resolve(root));
+    }
+
+    this.dependencyCache.clear();
   }
 
   public getDiagnostics(): Diagnostic[] {

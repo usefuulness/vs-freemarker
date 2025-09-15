@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { FreeMarkerStaticAnalyzer } from './static-analyzer';
+import { FreeMarkerStaticAnalyzer, Range as AnalyzerRange } from './static-analyzer';
 import { ImportResolver } from './static-analyzer/import-resolver';
 
 let diagnosticCollection: vscode.DiagnosticCollection;
@@ -65,9 +65,7 @@ async function refreshDiagnostics(document: vscode.TextDocument): Promise<void> 
 }
 
 export function deactivate(): void {
-  pendingAnalyses.forEach(timeout => clearTimeout(timeout));
-  pendingAnalyses.clear();
-  diagnosticCollection.dispose();
+  diagnosticCollection?.dispose();
   importResolver?.invalidateCache();
 }
 

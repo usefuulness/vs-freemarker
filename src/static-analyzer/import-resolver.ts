@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { ImportNode, IncludeNode, TemplateNode } from './parser';
 import { FreeMarkerStaticAnalyzer } from './index';
+import { LRUCache } from './lru-cache';
 
 export interface DependencyGraph {
   nodes: Map<string, DependencyNode>;
@@ -40,13 +41,14 @@ export interface ResolverOptions {
   maxDepth: number;
   followSymlinks: boolean;
   cacheEnabled: boolean;
+  maxCacheSize: number;
 }
 
 export class ImportResolver {
   private dependencyGraph: DependencyGraph;
   private analyzer: FreeMarkerStaticAnalyzer;
   private options: ResolverOptions;
-  private cache: Map<string, DependencyNode> = new Map();
+  private cache: LRUCache<string, DependencyNode>;
   private resolutionStack: Set<string> = new Set();
 
   constructor(analyzer: FreeMarkerStaticAnalyzer, options: Partial<ResolverOptions> = {}) {
@@ -56,7 +58,7 @@ export class ImportResolver {
       edges: new Map(),
       circularDependencies: []
     };
-    
+
     this.options = {
       basePath: process.cwd(),
       templateDirectories: ['templates', 'views', 'src'],
@@ -64,8 +66,12 @@ export class ImportResolver {
       maxDepth: 10,
       followSymlinks: false,
       cacheEnabled: true,
+      maxCacheSize: 200,
       ...options
     };
+    
+    this.cache = new LRUCache<string, DependencyNode>(this.options.maxCacheSize);
+
   }
 
   public async resolveImports(rootUri: string, content?: string): Promise<DependencyGraph> {
@@ -95,10 +101,14 @@ export class ImportResolver {
     }
 
     // Check cache first
-    if (this.options.cacheEnabled && this.cache.has(normalizedUri)) {
-      const cached = this.cache.get(normalizedUri)!;
-      if (await this.isCacheValid(cached)) {
+    if (this.options.cacheEnabled) {
+      const cached = this.cache.get(normalizedUri);
+      if (cached && (await this.isCacheValid(cached))) {
         return cached;
+      }
+
+      if (cached) {
+        this.cache.delete(normalizedUri);
       }
     }
 
@@ -422,6 +432,21 @@ export class ImportResolver {
     if (uri) {
       this.cache.delete(this.normalizeUri(uri));
     } else {
+      this.cache.clear();
+    }
+  }
+
+  public updateOptions(options: Partial<ResolverOptions>): void {
+    this.options = {
+      ...this.options,
+      ...options
+    };
+
+    if (options.maxCacheSize !== undefined) {
+      this.cache.setMaxSize(options.maxCacheSize);
+    }
+
+    if (options.cacheEnabled === false) {
       this.cache.clear();
     }
   }

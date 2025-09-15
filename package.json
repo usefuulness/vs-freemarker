@@ -6,7 +6,8 @@
     "publisher": "usefuulness",
     "main": "./out/extension.js",
     "activationEvents": [
-        "onLanguage:ftl"
+        "onLanguage:ftl",
+        "onCommand:freemarker.clearImportCache"
     ],
     "repository": {
         "type": "git",
@@ -33,6 +34,35 @@
                 "configuration": "./ftl.configuration.json"
             }
         ],
+        "commands": [
+            {
+                "command": "freemarker.clearImportCache",
+                "title": "FreeMarker: Clear Template Cache"
+            }
+        ],
+        "configuration": {
+            "title": "FreeMarker",
+            "properties": {
+                "freemarker.importResolver.templateDirectories": {
+                    "type": "array",
+                    "description": "Directories to search when resolving FreeMarker templates.",
+                    "default": [
+                        "templates",
+                        "views",
+                        "src"
+                    ],
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "freemarker.importResolver.maxCacheSize": {
+                    "type": "number",
+                    "description": "Maximum number of templates to keep in the import resolver cache. Older entries are evicted when the limit is reached.",
+                    "default": 200,
+                    "minimum": 0
+                }
+            }
+        },
         "grammars": [
             {
                 "language": "ftl",

@@ -1,8 +1,11 @@
+import * as path from 'path';
+
 import {
   TemplateNode,
   ASTNode,
   DirectiveNode,
   MacroNode,
+  MacroCallNode,
   FunctionNode,
   VariableNode,
   AssignmentNode,
@@ -16,11 +19,24 @@ import {
   BinaryExpressionNode,
   UnaryExpressionNode,
   LiteralNode,
+  ListLiteralNode,
+  HashLiteralNode,
   FunctionCallNode,
-  PropertyAccessNode
+  PropertyAccessNode,
+  BuiltInNode,
+  ExistsNode,
+  FallbackNode,
+  LambdaExpressionNode
 } from './parser';
 
+import { FreeMarkerLexer } from './lexer';
+import { FreeMarkerParser } from './parser';
+import * as fs from 'fs';
+import * as path from 'path';
+
 import { SemanticInfo, VariableInfo, MacroInfo, FunctionInfo, ImportInfo } from './index';
+import { ErrorReporter } from './error-reporter';
+import { resolveTemplatePath } from './path-utils';
 
 export interface Scope {
   type: 'global' | 'local' | 'macro' | 'function' | 'loop';
@@ -43,7 +59,14 @@ export interface TypeInfo {
   properties?: Map<string, TypeInfo>;
 }
 
+interface AnalysisContext {
+  filePath?: string;
+  templateRoots: string[];
+  visited?: Set<string>;
+}
+
 export class SemanticAnalyzer {
+  private errorReporter?: ErrorReporter;
   private symbolTable: SymbolTable = {
     globalScope: {
       type: 'global',
@@ -66,15 +89,65 @@ export class SemanticAnalyzer {
     includes: [],
     imports: []
   };
-  
+
   private errors: string[] = [];
   private warnings: string[] = [];
 
-  public analyze(ast: TemplateNode): SemanticInfo {
+  private cache: Map<string, SemanticInfo> = new Map();
+  private processing: Set<string> = new Set();
+  private completed: Set<string> = new Set();
+
+  public analyze(ast: TemplateNode, filePath?: string): SemanticInfo {
+    const normalizedPath = filePath ? this.normalizePath(filePath) : undefined;
+    const isRootAnalysis = this.processing.size === 0;
+
+    if (isRootAnalysis) {
+      this.completed.clear();
+    }
+
+    if (normalizedPath && this.processing.has(normalizedPath)) {
+      const message = `Circular dependency detected while analyzing '${normalizedPath}'`;
+      this.errors = [message];
+      this.warnings = [];
+
+      const cached = this.cache.get(normalizedPath);
+      if (cached) {
+        this.semanticInfo = cached;
+        return cached;
+      }
+
+      const emptyInfo = this.createEmptySemanticInfo();
+      this.semanticInfo = emptyInfo;
+      return emptyInfo;
+    }
+
+    if (normalizedPath && this.completed.has(normalizedPath)) {
+      const cached = this.cache.get(normalizedPath);
+      if (cached) {
+        this.errors = [];
+        this.warnings = [];
+        this.semanticInfo = cached;
+        this.completed.add(normalizedPath);
+        return cached;
+      }
+    }
+
     this.initializeAnalysis();
-    
-    if (ast) {
-      this.analyzeNode(ast);
+
+    if (normalizedPath) {
+      this.processing.add(normalizedPath);
+    }
+
+    try {
+      if (ast) {
+        this.analyzeNode(ast);
+      }
+    } finally {
+      if (normalizedPath) {
+        this.processing.delete(normalizedPath);
+        this.completed.add(normalizedPath);
+        this.cache.set(normalizedPath, this.semanticInfo);
+      }
     }
     
     return this.semanticInfo;
@@ -93,7 +166,15 @@ export class SemanticAnalyzer {
       currentScope: globalScope
     };
 
-    this.semanticInfo = {
+    this.semanticInfo = this.createEmptySemanticInfo();
+
+    this.errors = [];
+    this.warnings = [];
+    this.addBuiltinSymbols();
+  }
+
+  private createEmptySemanticInfo(): SemanticInfo {
+    return {
       variables: new Map(),
       macros: new Map(),
       functions: new Map(),
@@ -101,9 +182,6 @@ export class SemanticAnalyzer {
       imports: []
     };
 
-    this.errors = [];
-    this.warnings = [];
-    this.addBuiltinSymbols();
   }
 
   private addBuiltinSymbols(): void {
@@ -184,6 +262,9 @@ export class SemanticAnalyzer {
       case 'Include':
         this.analyzeInclude(node as IncludeNode);
         break;
+      case 'MacroCall':
+        this.analyzeMacroCall(node as MacroCallNode);
+        break;
       case 'Directive':
         this.analyzeDirective(node as DirectiveNode);
         break;
@@ -196,17 +277,39 @@ export class SemanticAnalyzer {
   private analyzeTemplate(node: TemplateNode): void {
     // Process imports first
     node.imports.forEach(importNode => this.analyzeImport(importNode));
-    
+
     // Process includes
     node.includes.forEach(includeNode => this.analyzeInclude(includeNode));
-    
+
+    // Predeclare macros and functions so they are available regardless of order
+    node.body.forEach(child => {
+      switch (child.type) {
+        case 'Macro':
+          this.declareMacro(child as MacroNode);
+          break;
+        case 'Function':
+          this.declareFunction(child as FunctionNode);
+          break;
+      }
+    });
+
+    const macroSnapshot = new Map(this.symbolTable.currentScope.macros);
+    node.body.forEach(child => {
+      if (child.type === 'Macro') {
+        const macro = this.symbolTable.currentScope.macros.get((child as MacroNode).name);
+        if (macro) {
+          macro.contextMacros = new Map(macroSnapshot);
+        }
+      }
+    });
+
     // Process the body
     node.body.forEach(child => this.analyzeNode(child));
   }
 
   private analyzeAssignment(node: AssignmentNode): void {
     const valueType = this.analyzeExpression(node.value);
-    
+
     const variableInfo: VariableInfo = {
       name: node.variable,
       type: valueType.type,
@@ -219,16 +322,31 @@ export class SemanticAnalyzer {
     this.semanticInfo.variables.set(node.variable, variableInfo);
   }
 
-  private analyzeMacro(node: MacroNode): void {
-    const macroInfo: MacroInfo = {
-      name: node.name,
-      parameters: node.parameters,
-      definedAt: node.position,
-      usages: []
-    };
+  private declareMacro(node: MacroNode): MacroInfo {
+    let macroInfo = this.symbolTable.currentScope.macros.get(node.name);
+    if (!macroInfo) {
+      macroInfo = {
+        name: node.name,
+        parameters: node.parameters,
+        definedAt: node.position,
+        usages: [],
+        node,
+        contextMacros: new Map()
+      };
 
-    this.symbolTable.currentScope.macros.set(node.name, macroInfo);
-    this.semanticInfo.macros.set(node.name, macroInfo);
+      this.symbolTable.currentScope.macros.set(node.name, macroInfo);
+      this.semanticInfo.macros.set(node.name, macroInfo);
+    } else {
+      macroInfo.parameters = node.parameters;
+      macroInfo.definedAt = node.position;
+      macroInfo.node = node;
+    }
+
+    return macroInfo;
+  }
+
+  private analyzeMacro(node: MacroNode): void {
+    const macroInfo = this.declareMacro(node);
 
     // Create a new scope for the macro
     const macroScope: Scope = {
@@ -239,6 +357,14 @@ export class SemanticAnalyzer {
       functions: new Map(),
       parent: this.symbolTable.currentScope
     };
+
+    if (macroInfo.contextMacros) {
+      macroInfo.contextMacros.forEach((ctxMacro, macroName) => {
+        if (!macroScope.macros.has(macroName)) {
+          macroScope.macros.set(macroName, ctxMacro);
+        }
+      });
+    }
 
     // Add parameters as local variables
     node.parameters.forEach(param => {
@@ -261,17 +387,30 @@ export class SemanticAnalyzer {
     this.symbolTable.currentScope = previousScope;
   }
 
-  private analyzeFunction(node: FunctionNode): void {
-    const functionInfo: FunctionInfo = {
-      name: node.name,
-      parameters: node.parameters,
-      returnType: node.returnType || 'any',
-      definedAt: node.position,
-      usages: []
-    };
+  private declareFunction(node: FunctionNode): FunctionInfo {
+    let functionInfo = this.symbolTable.currentScope.functions.get(node.name);
+    if (!functionInfo) {
+      functionInfo = {
+        name: node.name,
+        parameters: node.parameters,
+        returnType: node.returnType || 'any',
+        definedAt: node.position,
+        usages: []
+      };
 
-    this.symbolTable.currentScope.functions.set(node.name, functionInfo);
-    this.semanticInfo.functions.set(node.name, functionInfo);
+      this.symbolTable.currentScope.functions.set(node.name, functionInfo);
+      this.semanticInfo.functions.set(node.name, functionInfo);
+    } else {
+      functionInfo.parameters = node.parameters;
+      functionInfo.returnType = node.returnType || functionInfo.returnType;
+      functionInfo.definedAt = node.position;
+    }
+
+    return functionInfo;
+  }
+
+  private analyzeFunction(node: FunctionNode): void {
+    this.declareFunction(node);
 
     // Create a new scope for the function
     const functionScope: Scope = {
@@ -306,7 +445,9 @@ export class SemanticAnalyzer {
 
   private analyzeIf(node: IfNode): void {
     this.analyzeExpression(node.condition);
-    
+
+    const definedVars = this.extractDefinedVariables(node.condition);
+
     // Create new scope for then branch
     const thenScope: Scope = {
       type: 'local',
@@ -315,6 +456,17 @@ export class SemanticAnalyzer {
       functions: new Map(),
       parent: this.symbolTable.currentScope
     };
+
+    definedVars.forEach(name => {
+      const varInfo: VariableInfo = {
+        name,
+        type: 'any',
+        scope: 'local',
+        definedAt: node.position,
+        usages: []
+      };
+      thenScope.variables.set(name, varInfo);
+    });
 
     const previousScope = this.symbolTable.currentScope;
     this.symbolTable.currentScope = thenScope;
@@ -349,15 +501,26 @@ export class SemanticAnalyzer {
       parent: this.symbolTable.currentScope
     };
 
-    // Add loop variable
-    const loopVarInfo: VariableInfo = {
+    // Add loop variables
+    if (node.key) {
+      const keyInfo: VariableInfo = {
+        name: node.key,
+        type: 'any',
+        scope: 'loop',
+        definedAt: node.position,
+        usages: []
+      };
+      loopScope.variables.set(node.key, keyInfo);
+    }
+
+    const itemInfo: VariableInfo = {
       name: node.item,
       type: 'any',
       scope: 'loop',
       definedAt: node.position,
       usages: []
     };
-    loopScope.variables.set(node.item, loopVarInfo);
+    loopScope.variables.set(node.item, itemInfo);
 
     const previousScope = this.symbolTable.currentScope;
     this.symbolTable.currentScope = loopScope;
@@ -384,17 +547,152 @@ export class SemanticAnalyzer {
     this.analyzeExpression(node.expression);
   }
 
+  private analyzeMacroCall(node: MacroCallNode): void {
+    if (node.name === 'import' || node.name === 'include') {
+      node.parameters.forEach(param => this.analyzeExpression(param.value));
+      return;
+    }
+
+    node.parameters.forEach(param => this.analyzeExpression(param.value));
+
+    const macro = this.findMacro(node.name);
+    if (macro && macro.node) {
+      macro.usages.push(node.position);
+      const macroNode = macro.node;
+
+      if (this.activeMacroNodes.has(macroNode)) {
+        return;
+      }
+
+      this.activeMacroNodes.add(macroNode);
+      const macroScope: Scope = {
+        type: 'macro',
+        name: macro.name,
+        variables: new Map(),
+        macros: new Map(),
+        functions: new Map(),
+        parent: this.symbolTable.currentScope
+      };
+
+      if (macro.contextMacros) {
+        macro.contextMacros.forEach((availableMacro, macroName) => {
+          if (!macroScope.macros.has(macroName)) {
+            macroScope.macros.set(macroName, availableMacro);
+          }
+        });
+      }
+
+      const positionalArgs = node.parameters.filter(param => !param.name);
+      let positionalIndex = 0;
+
+      macro.parameters.forEach(paramName => {
+        const namedArg = node.parameters.find(param => param.name === paramName);
+        let argument = namedArg;
+        if (!argument && positionalIndex < positionalArgs.length) {
+          argument = positionalArgs[positionalIndex];
+          positionalIndex++;
+        }
+
+        const definedAt = argument?.value?.position ?? node.position;
+        const paramInfo: VariableInfo = {
+          name: paramName,
+          type: 'any',
+          scope: 'local',
+          definedAt,
+          usages: []
+        };
+        macroScope.variables.set(paramName, paramInfo);
+      });
+
+      const previousScope = this.symbolTable.currentScope;
+      this.symbolTable.currentScope = macroScope;
+      try {
+        macroNode.body.forEach(child => this.analyzeNode(child));
+      } finally {
+        this.symbolTable.currentScope = previousScope;
+        this.activeMacroNodes.delete(macroNode);
+      }
+
+      // Promote variables defined in macro scope to current scope
+      macroScope.variables.forEach((info, name) => {
+        if (!previousScope.variables.has(name)) {
+          previousScope.variables.set(name, info);
+          this.semanticInfo.variables.set(name, info);
+        }
+      });
+    } else {
+      const message = `Undefined macro: ${node.name}`;
+      this.errors.push(message);
+      if (this.errorReporter) {
+        this.errorReporter.addError(message, node.range, 'FTL2004');
+      }
+    }
+  }
+
   private analyzeImport(node: ImportNode): void {
+    const resolvedPath = node.resolvedPath ?? this.resolveTemplateReference(node.path);
     const importInfo: ImportInfo = {
       path: node.path,
       alias: node.alias,
-      resolvedPath: node.resolvedPath
+      resolvedPath
     };
     this.semanticInfo.imports.push(importInfo);
+
+    if (!resolvedPath) {
+      return;
+    }
+
+    node.resolvedPath = resolvedPath;
+
+    const info = this.loadExternalTemplate(resolvedPath);
+    if (!info) {
+      return;
+    }
+
+    info.macros.forEach((m, name) => {
+      const namespaced = node.alias ? `${node.alias}.${name}` : name;
+      const macroContext = m.contextMacros ? new Map(m.contextMacros) : new Map(info.macros);
+      const macroInfo: MacroInfo = { ...m, name: namespaced, contextMacros: macroContext };
+      this.symbolTable.currentScope.macros.set(namespaced, macroInfo);
+      this.semanticInfo.macros.set(namespaced, macroInfo);
+    });
   }
 
   private analyzeInclude(node: IncludeNode): void {
     this.semanticInfo.includes.push(node.path);
+
+    const resolvedPath = node.resolvedPath ?? this.resolveTemplateReference(node.path);
+    if (!resolvedPath) {
+      return;
+    }
+
+    node.resolvedPath = resolvedPath;
+
+    const info = this.loadExternalTemplate(resolvedPath);
+    if (!info) {
+      return;
+    }
+
+    info.macros.forEach((macro, name) => {
+      const macroContext = macro.contextMacros ? new Map(macro.contextMacros) : new Map(info.macros);
+      const macroInfo: MacroInfo = { ...macro, name, contextMacros: macroContext };
+      this.symbolTable.currentScope.macros.set(name, macroInfo);
+      this.semanticInfo.macros.set(name, macroInfo);
+    });
+
+    info.functions.forEach((fn, name) => {
+      const functionInfo: FunctionInfo = { ...fn, name };
+      this.symbolTable.currentScope.functions.set(name, functionInfo);
+      this.semanticInfo.functions.set(name, functionInfo);
+    });
+
+    info.variables.forEach((variable, name) => {
+      if (!this.symbolTable.currentScope.variables.has(name)) {
+        const variableInfo: VariableInfo = { ...variable, name };
+        this.symbolTable.currentScope.variables.set(name, variableInfo);
+        this.semanticInfo.variables.set(name, variableInfo);
+      }
+    });
   }
 
   private analyzeDirective(node: DirectiveNode): void {
@@ -411,10 +709,10 @@ export class SemanticAnalyzer {
     }
   }
 
-  private analyzeExpression(expr: ExpressionNode): TypeInfo {
+  private analyzeExpression(expr: ExpressionNode, ignoreUndefined = false): TypeInfo {
     switch (expr.type) {
       case 'Variable':
-        return this.analyzeVariableReference(expr as VariableNode);
+        return this.analyzeVariableReference(expr as VariableNode, ignoreUndefined);
       case 'Literal':
         return this.analyzeLiteral(expr as LiteralNode);
       case 'BinaryExpression':
@@ -425,24 +723,58 @@ export class SemanticAnalyzer {
         return this.analyzeFunctionCall(expr as FunctionCallNode);
       case 'PropertyAccess':
         return this.analyzePropertyAccess(expr as PropertyAccessNode);
+      case 'BuiltIn':
+        return this.analyzeBuiltIn(expr as BuiltInNode);
+      case 'Exists':
+        return this.analyzeExists(expr as ExistsNode);
+      case 'Fallback':
+        return this.analyzeFallback(expr as FallbackNode);
+      case 'ListLiteral':
+        return this.analyzeListLiteral(expr as ListLiteralNode);
+      case 'HashLiteral':
+        return this.analyzeHashLiteral(expr as HashLiteralNode);
+      case 'Lambda':
+        return this.analyzeLambda(expr as LambdaExpressionNode);
       default:
         return { type: 'unknown', nullable: true };
     }
   }
 
-  private analyzeVariableReference(node: VariableNode): TypeInfo {
+  private analyzeVariableReference(node: VariableNode, ignoreUndefined: boolean): TypeInfo {
     const variable = this.findVariable(node.name);
     if (variable) {
       variable.usages.push(node.position);
       return { type: variable.type, nullable: false };
     } else {
-      this.errors.push(`Undefined variable: ${node.name}`);
+      if (!ignoreUndefined) {
+        const message = `Undefined variable: ${node.name}`;
+        this.errors.push(message);
+        if (this.errorReporter) {
+          this.errorReporter.addError(message, node.range, 'FTL2001');
+        }
+      }
       return { type: 'unknown', nullable: true };
     }
   }
 
   private analyzeLiteral(node: LiteralNode): TypeInfo {
     return { type: node.dataType, nullable: false };
+  }
+
+  private analyzeListLiteral(node: ListLiteralNode): TypeInfo {
+    node.items.forEach(item => this.analyzeExpression(item));
+    return { type: 'sequence', nullable: false, enumerable: true };
+  }
+
+  private analyzeHashLiteral(node: HashLiteralNode): TypeInfo {
+    node.entries.forEach(entry => {
+      if (entry.keyExpression) {
+        this.analyzeExpression(entry.keyExpression);
+      }
+      this.analyzeExpression(entry.value);
+    });
+
+    return { type: 'hash', nullable: false };
   }
 
   private analyzeBinaryExpression(node: BinaryExpressionNode): TypeInfo {
@@ -498,10 +830,14 @@ export class SemanticAnalyzer {
       
       // Analyze arguments
       node.arguments.forEach(arg => this.analyzeExpression(arg));
-      
+
       return { type: functionInfo.returnType, nullable: false };
     } else {
-      this.errors.push(`Undefined function: ${node.name}`);
+      const message = `Undefined function: ${node.name}`;
+      this.errors.push(message);
+      if (this.errorReporter) {
+        this.errorReporter.addError(message, node.range, 'FTL2003');
+      }
       return { type: 'unknown', nullable: true };
     }
   }
@@ -510,6 +846,131 @@ export class SemanticAnalyzer {
     this.analyzeExpression(node.object);
     // Simple property access - could be enhanced with more sophisticated type checking
     return { type: 'unknown', nullable: true };
+  }
+
+  private analyzeBuiltIn(node: BuiltInNode): TypeInfo {
+    this.analyzeExpression(node.target, true);
+    node.arguments?.forEach(arg => this.analyzeExpression(arg));
+
+    switch (node.name) {
+      case 'has_content':
+        return { type: 'boolean', nullable: false };
+      case 'string':
+      case 'default':
+        return { type: 'string', nullable: false };
+      default:
+        return { type: 'unknown', nullable: true };
+    }
+  }
+
+  private analyzeExists(node: ExistsNode): TypeInfo {
+    this.analyzeExpression(node.target, true);
+    return { type: 'boolean', nullable: false };
+  }
+
+  private analyzeFallback(node: FallbackNode): TypeInfo {
+    this.analyzeExpression(node.target, true);
+    return this.analyzeExpression(node.fallback);
+  }
+
+  private analyzeLambda(node: LambdaExpressionNode): TypeInfo {
+    const lambdaScope: Scope = {
+      type: 'function',
+      name: 'lambda',
+      variables: new Map(),
+      macros: new Map(),
+      functions: new Map(),
+      parent: this.symbolTable.currentScope
+    };
+
+    node.parameters.forEach(param => {
+      if (!param) {
+        return;
+      }
+
+      const paramInfo: VariableInfo = {
+        name: param,
+        type: 'any',
+        scope: 'local',
+        definedAt: node.position,
+        usages: []
+      };
+
+      lambdaScope.variables.set(param, paramInfo);
+    });
+
+    const previousScope = this.symbolTable.currentScope;
+    this.symbolTable.currentScope = lambdaScope;
+    this.analyzeExpression(node.body);
+    this.symbolTable.currentScope = previousScope;
+
+    return { type: 'lambda', nullable: false };
+  }
+
+  private resolveTemplateReference(templatePath: string): string | undefined {
+    return resolveTemplatePath(templatePath, {
+      currentFile: this.context.filePath,
+      templateRoots: this.context.templateRoots
+    });
+  }
+
+  private loadExternalTemplate(filePath: string): SemanticInfo | undefined {
+    const normalizedPath = path.normalize(filePath);
+
+    if (this.context.visited?.has(normalizedPath)) {
+      return undefined;
+    }
+
+    const visitedSet = this.context.visited;
+    visitedSet?.add(normalizedPath);
+
+    try {
+      const content = fs.readFileSync(normalizedPath, 'utf8');
+      const lexer = new FreeMarkerLexer();
+      const tokens = lexer.tokenize(content);
+      const parser = new FreeMarkerParser(tokens);
+      const ast = parser.parse();
+      const analyzer = new SemanticAnalyzer();
+      return analyzer.analyze(ast, undefined, {
+        filePath: normalizedPath,
+        templateRoots: this.context.templateRoots,
+        visited: visitedSet
+      });
+    } catch {
+      return undefined;
+    } finally {
+      visitedSet?.delete(normalizedPath);
+    }
+  }
+
+  private extractDefinedVariables(expr: ExpressionNode): string[] {
+    const vars: string[] = [];
+    const visit = (e: ExpressionNode): void => {
+      switch (e.type) {
+        case 'Exists': {
+          const exists = e as ExistsNode;
+          if (exists.target.type === 'Variable') {
+            vars.push((exists.target as VariableNode).name);
+          }
+          break;
+        }
+        case 'BuiltIn': {
+          const b = e as BuiltInNode;
+          if (b.name === 'has_content' && b.target.type === 'Variable') {
+            vars.push((b.target as VariableNode).name);
+          }
+          break;
+        }
+        case 'BinaryExpression': {
+          visit((e as BinaryExpressionNode).left);
+          visit((e as BinaryExpressionNode).right);
+          break;
+        }
+      }
+    };
+
+    visit(expr);
+    return vars;
   }
 
   private findVariable(name: string): VariableInfo | undefined {
@@ -560,5 +1021,9 @@ export class SemanticAnalyzer {
 
   public getWarnings(): string[] {
     return this.warnings;
+  }
+
+  private normalizePath(filePath: string): string {
+    return path.resolve(filePath).replace(/\\/g, '/');
   }
 }

@@ -55,14 +55,14 @@ describe('FreeMarker Static Analyzer Integration', () => {
       expect(result2.semanticInfo).toBeDefined();
     });
 
-      test('reports missing import as diagnostic', () => {
+      test('reports missing import as diagnostic', async () => {
         const template = '<#import "missing.ftl" as m/>';
-        const result = analyzer.analyze(template, '/project/main.ftl');
+        const result = await analyzer.analyze(template, '/project/main.ftl');
 
         expect(result.diagnostics.some(d => d.code === 'FTL4001')).toBe(true);
       });
 
-      test('reports missing transitive dependency as diagnostic', () => {
+      test('reports missing transitive dependency as diagnostic', async () => {
         const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-transitive-'));
         const projectDir = path.join(workspaceDir, 'project');
         fs.mkdirSync(projectDir, { recursive: true });
@@ -78,7 +78,7 @@ describe('FreeMarker Static Analyzer Integration', () => {
         fs.writeFileSync(mainPath, mainTemplate);
 
         analyzer.setTemplateRoots([workspaceDir]);
-        const result = analyzer.analyze(mainTemplate, mainPath);
+        const result = await analyzer.analyze(mainTemplate, mainPath);
 
         const diag = result.diagnostics.find(
           d => d.code === 'FTL4001' && d.message.includes('missing.ftl')
@@ -86,9 +86,9 @@ describe('FreeMarker Static Analyzer Integration', () => {
         expect(diag).toBeDefined();
       });
 
-      test('reports undefined variable as diagnostic', () => {
+      test('reports undefined variable as diagnostic', async () => {
         const template = '${foo}';
-        const result = analyzer.analyze(template);
+        const result = await analyzer.analyze(template);
         const diag = result.diagnostics.find(d => d.code === 'FTL2001');
         expect(diag).toBeDefined();
         expect(diag?.range.start.line).toBe(1);
@@ -96,33 +96,33 @@ describe('FreeMarker Static Analyzer Integration', () => {
         expect(diag?.range.end.character).toBe(6);
       });
 
-      test('reports syntax error as diagnostic', () => {
+      test('reports syntax error as diagnostic', async () => {
         const template = '${foo';
-        const result = analyzer.analyze(template);
+        const result = await analyzer.analyze(template);
 
         expect(result.diagnostics.some(d => d.code === 'FTL1005')).toBe(true);
       });
 
-      test('treats variable as defined after null check', () => {
+      test('treats variable as defined after null check', async () => {
         const template = `<#if user??>\${user}</#if>`;
-        const result = analyzer.analyze(template);
+        const result = await analyzer.analyze(template);
         expect(result.diagnostics.some(d => d.code === 'FTL2001' && d.message.includes('user'))).toBe(false);
       });
 
-      test('supports fallback default operator', () => {
+      test('supports fallback default operator', async () => {
         const template = '${foo!"bar"}';
-        const result = analyzer.analyze(template);
+        const result = await analyzer.analyze(template);
         expect(result.diagnostics.some(d => d.code === 'FTL2001')).toBe(false);
       });
 
-      test('handles list with key and value variables', () => {
+      test('handles list with key and value variables', async () => {
         const template = '<#list others as attrName, attrVal>${attrName}="${attrVal?string}"</#list>';
-        const result = analyzer.analyze(template);
+        const result = await analyzer.analyze(template);
         expect(result.diagnostics.some(d => d.message.includes('attrName'))).toBe(false);
         expect(result.diagnostics.some(d => d.message.includes('attrVal'))).toBe(false);
       });
 
-      test('imports macro and applies assigned variables globally', () => {
+      test('imports macro and applies assigned variables globally', async () => {
         const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-'));
         const macroPath = path.join(tmpDir, 'macros.ftl');
         fs.writeFileSync(macroPath, '<#macro init><#assign x=1></#macro>');
@@ -130,32 +130,32 @@ describe('FreeMarker Static Analyzer Integration', () => {
         const mainTemplate = `<#import "${macroPath}" as m/><@m.init/>\${x}`;
         const mainPath = path.join(tmpDir, 'main.ftl');
         fs.writeFileSync(mainPath, mainTemplate);
-        const result = analyzer.analyze(mainTemplate, mainPath);
+        const result = await analyzer.analyze(mainTemplate, mainPath);
 
         expect(result.diagnostics.some(d => d.code === 'FTL2001' && d.message.includes('x'))).toBe(false);
       });
 
-      test('parses macro calls with parameters correctly', () => {
+      test('parses macro calls with parameters correctly', async () => {
         const template =
           '<#macro layout title></#macro>' +
           '<#macro include path></#macro>' +
           '<@layout title="foo"></@layout>' +
           '<@include path="bar"/>';
-        const result = analyzer.analyze(template);
+        const result = await analyzer.analyze(template);
         expect(result.diagnostics.some(d => d.code === 'FTL2004' && /(title|path)/.test(d.message))).toBe(false);
       });
 
-      test('handles recursive macro calls without infinite recursion', () => {
+      test('handles recursive macro calls without infinite recursion', async () => {
         const template = [
           '<#macro first><@second/></#macro>',
           '<#macro second><@first/></#macro>',
           '<@first/>'
         ].join('');
 
-        expect(() => analyzer.analyze(template)).not.toThrow();
+        await expect(analyzer.analyze(template)).resolves.toBeDefined();
       });
 
-      test('makes macros from included templates available', () => {
+      test('makes macros from included templates available', async () => {
         const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-include-'));
         const layoutsDir = path.join(tmpDir, 'layouts');
         fs.mkdirSync(layoutsDir, { recursive: true });
@@ -167,16 +167,16 @@ describe('FreeMarker Static Analyzer Integration', () => {
         fs.writeFileSync(mainPath, template);
 
         analyzer.setTemplateRoots([tmpDir]);
-        const result = analyzer.analyze(template, mainPath);
+        const result = await analyzer.analyze(template, mainPath);
 
         expect(result.diagnostics.some(d => d.code === 'FTL2004' && d.message.includes('layout'))).toBe(false);
 
         const templateWithParam = '<#include path="/layouts/main.ftl"/><@layout title="Home"></@layout>';
-        const resultWithParam = analyzer.analyze(templateWithParam, mainPath);
+        const resultWithParam = await analyzer.analyze(templateWithParam, mainPath);
         expect(resultWithParam.diagnostics.some(d => d.code === 'FTL2004' && d.message.includes('layout'))).toBe(false);
       });
 
-      test('resolves imports relative to configured template roots', () => {
+      test('resolves imports relative to configured template roots', async () => {
         const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-import-'));
         const layoutsDir = path.join(tmpDir, 'layouts');
         fs.mkdirSync(layoutsDir, { recursive: true });
@@ -189,19 +189,20 @@ describe('FreeMarker Static Analyzer Integration', () => {
         fs.writeFileSync(mainPath, template);
 
         analyzer.setTemplateRoots([tmpDir]);
-        const result = analyzer.analyze(template, mainPath);
+        const result = await analyzer.analyze(template, mainPath);
 
         expect(result.diagnostics.some(d => d.code === 'FTL2004' && d.message.includes('layout'))).toBe(false);
       });
 
-      test('parses hash and list literals without introducing placeholder variables', () => {
+      test('parses hash and list literals without introducing placeholder variables', async () => {
         const template = '<#assign config = {"columns": ["name", "status"], "pageable": {"size": 20}}/>';
-        const result = analyzer.analyze(template);
+        const result = await analyzer.analyze(template);
 
+        expect(result.diagnostics.some(d => d.code === 'FTL2001' && /lang/.test(d.message))).toBe(false);
         expect(result.diagnostics.some(d => d.code === 'FTL2001' && /unknown/.test(d.message))).toBe(false);
       });
 
-      test('treats macro-style import directive like standard import', () => {
+      test('treats macro-style import directive like standard import', async () => {
         const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-macro-import-'));
         const projectDir = path.join(tmpDir, 'project');
         fs.mkdirSync(projectDir, { recursive: true });
@@ -222,13 +223,13 @@ describe('FreeMarker Static Analyzer Integration', () => {
         fs.writeFileSync(mainPath, template);
 
         analyzer.setTemplateRoots([tmpDir]);
-        const result = analyzer.analyze(template, mainPath);
+        const result = await analyzer.analyze(template, mainPath);
 
         expect(result.diagnostics.some(d => d.code === 'FTL2004')).toBe(false);
         expect(result.diagnostics.some(d => d.code === 'FTL2001' && /unknown/.test(d.message))).toBe(false);
       });
 
-      test('treats macro-style include directive like standard include', () => {
+      test('treats macro-style include directive like standard include', async () => {
         const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-macro-include-'));
         const layoutsDir = path.join(tmpDir, 'layouts');
         fs.mkdirSync(layoutsDir, { recursive: true });
@@ -240,42 +241,42 @@ describe('FreeMarker Static Analyzer Integration', () => {
         fs.writeFileSync(mainPath, template);
 
         analyzer.setTemplateRoots([tmpDir]);
-        const result = analyzer.analyze(template, mainPath);
+        const result = await analyzer.analyze(template, mainPath);
 
         expect(result.diagnostics.some(d => d.code === 'FTL2004' && d.message.includes('layout'))).toBe(false);
       });
 
-      test('does not report missing files for optional includes', () => {
+      test('does not report missing files for optional includes', async () => {
         const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-optional-include-'));
         const template = '<@include path="/missing.ftl" optional=true />';
         const mainPath = path.join(tmpDir, 'index.ftl');
         fs.writeFileSync(mainPath, template);
 
         analyzer.setTemplateRoots([tmpDir]);
-        const result = analyzer.analyze(template, mainPath);
+        const result = await analyzer.analyze(template, mainPath);
 
         expect(result.diagnostics.some(d => d.code === 'FTL4001')).toBe(false);
       });
 
-      test('supports lambda expressions inside built-ins without undefined diagnostics', () => {
+      test('supports lambda expressions inside built-ins without undefined diagnostics', async () => {
         const template = '<#assign trimmed = [" a ", "b "]?map(lang -> lang?trim)/>${trimmed?size}';
-        const result = analyzer.analyze(template);
+        const result = await analyzer.analyze(template);
 
         expect(result.diagnostics.some(d => d.code === 'FTL2001' && /lang/.test(d.message))).toBe(false);
         expect(result.diagnostics.some(d => d.code === 'FTL2001' && /unknown/.test(d.message))).toBe(false);
       });
 
-      test('allows macros to reference helpers defined later in the template', () => {
+      test('allows macros to reference helpers defined later in the template', async () => {
         const template =
           '<#macro layout><@helper/></#macro>' +
           '<#macro helper>${"ok"}</#macro>' +
           '<@layout />';
-        const result = analyzer.analyze(template);
+        const result = await analyzer.analyze(template);
 
         expect(result.diagnostics.some(d => d.code === 'FTL2004')).toBe(false);
       });
 
-      test('analyzes included layouts that use lambdas and optional includes', () => {
+      test('analyzes included layouts that use lambdas and optional includes', async () => {
         const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-layout-lambda-'));
         const layoutsDir = path.join(tmpDir, 'layouts');
         fs.mkdirSync(layoutsDir, { recursive: true });
@@ -298,14 +299,14 @@ describe('FreeMarker Static Analyzer Integration', () => {
         fs.writeFileSync(mainPath, template);
 
         analyzer.setTemplateRoots([tmpDir]);
-        const result = analyzer.analyze(template, mainPath);
+        const result = await analyzer.analyze(template, mainPath);
 
         expect(result.diagnostics.some(d => d.code === 'FTL2004')).toBe(false);
         expect(result.diagnostics.some(d => d.code === 'FTL2001' && /lang|unknown/.test(d.message))).toBe(false);
         expect(result.diagnostics.some(d => d.code === 'FTL4001')).toBe(false);
       });
 
-      test('resolves absolute imports using ancestor directories as template roots', () => {
+      test('resolves absolute imports using ancestor directories as template roots', async () => {
         const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-root-detect-'));
         const templatesDir = path.join(workspaceDir, 'src', 'templates');
         const projectDir = path.join(templatesDir, 'project');
@@ -333,7 +334,7 @@ describe('FreeMarker Static Analyzer Integration', () => {
         fs.writeFileSync(mainPath, template);
 
         analyzer.setTemplateRoots([workspaceDir]);
-        const result = analyzer.analyze(template, mainPath);
+        const result = await analyzer.analyze(template, mainPath);
 
         expect(result.diagnostics.some(d => d.code === 'FTL4001')).toBe(false);
         expect(result.diagnostics.some(d => d.code === 'FTL2004')).toBe(false);

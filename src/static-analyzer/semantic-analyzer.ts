@@ -32,7 +32,6 @@ import {
 import { FreeMarkerLexer } from './lexer';
 import { FreeMarkerParser } from './parser';
 import * as fs from 'fs';
-import * as path from 'path';
 
 import { SemanticInfo, VariableInfo, MacroInfo, FunctionInfo, ImportInfo } from './index';
 import { ErrorReporter } from './error-reporter';
@@ -96,9 +95,27 @@ export class SemanticAnalyzer {
   private cache: Map<string, SemanticInfo> = new Map();
   private processing: Set<string> = new Set();
   private completed: Set<string> = new Set();
+  private activeMacroNodes: Set<MacroNode> = new Set();
+  private context: AnalysisContext = {
+    templateRoots: [],
+    visited: new Set<string>()
+  };
+  private unresolvedMacroCalls: { node: MacroCallNode; name: string }[] = [];
 
-  public analyze(ast: TemplateNode, filePath?: string): SemanticInfo {
-    const normalizedPath = filePath ? this.normalizePath(filePath) : undefined;
+  public setErrorReporter(errorReporter: ErrorReporter): void {
+    this.errorReporter = errorReporter;
+  }
+
+  public analyze(ast: TemplateNode, filePath?: string, context?: AnalysisContext): SemanticInfo {
+    const previousContext = this.context;
+    const activeFilePath = filePath ?? context?.filePath;
+    this.context = {
+      filePath: activeFilePath,
+      templateRoots: context?.templateRoots ?? previousContext.templateRoots ?? [],
+      visited: context?.visited ?? new Set<string>()
+    };
+
+    const normalizedPath = activeFilePath ? this.normalizePath(activeFilePath) : undefined;
     const isRootAnalysis = this.processing.size === 0;
 
     if (isRootAnalysis) {
@@ -148,8 +165,11 @@ export class SemanticAnalyzer {
         this.completed.add(normalizedPath);
         this.cache.set(normalizedPath, this.semanticInfo);
       }
+      this.context = previousContext;
     }
-    
+
+    this.reportUnresolvedMacros();
+
     return this.semanticInfo;
   }
 
@@ -171,6 +191,24 @@ export class SemanticAnalyzer {
     this.errors = [];
     this.warnings = [];
     this.addBuiltinSymbols();
+    this.activeMacroNodes.clear();
+    this.unresolvedMacroCalls = [];
+  }
+
+  private reportUnresolvedMacros(): void {
+    if (!this.unresolvedMacroCalls.length) {
+      return;
+    }
+
+    this.unresolvedMacroCalls.forEach(({ node, name }) => {
+      if (!this.semanticInfo.macros.has(name)) {
+        const message = `Undefined macro: ${name}`;
+        this.errors.push(message);
+        this.errorReporter?.addError(message, node.range, 'FTL2004');
+      }
+    });
+
+    this.unresolvedMacroCalls = [];
   }
 
   private createEmptySemanticInfo(): SemanticInfo {
@@ -349,13 +387,14 @@ export class SemanticAnalyzer {
     const macroInfo = this.declareMacro(node);
 
     // Create a new scope for the macro
+    const parentScope = this.symbolTable.currentScope;
     const macroScope: Scope = {
       type: 'macro',
       name: node.name,
       variables: new Map(),
       macros: new Map(),
       functions: new Map(),
-      parent: this.symbolTable.currentScope
+      parent: parentScope
     };
 
     if (macroInfo.contextMacros) {
@@ -365,6 +404,12 @@ export class SemanticAnalyzer {
         }
       });
     }
+
+    parentScope.macros.forEach((availableMacro, macroName) => {
+      if (!macroScope.macros.has(macroName)) {
+        macroScope.macros.set(macroName, availableMacro);
+      }
+    });
 
     // Add parameters as local variables
     node.parameters.forEach(param => {
@@ -555,7 +600,10 @@ export class SemanticAnalyzer {
 
     node.parameters.forEach(param => this.analyzeExpression(param.value));
 
-    const macro = this.findMacro(node.name);
+    let macro = this.findMacro(node.name);
+    if (!macro) {
+      macro = this.semanticInfo.macros.get(node.name);
+    }
     if (macro && macro.node) {
       macro.usages.push(node.position);
       const macroNode = macro.node;
@@ -621,11 +669,7 @@ export class SemanticAnalyzer {
         }
       });
     } else {
-      const message = `Undefined macro: ${node.name}`;
-      this.errors.push(message);
-      if (this.errorReporter) {
-        this.errorReporter.addError(message, node.range, 'FTL2004');
-      }
+      this.unresolvedMacroCalls.push({ node, name: node.name });
     }
   }
 
@@ -649,9 +693,21 @@ export class SemanticAnalyzer {
       return;
     }
 
+    const importedMacros = new Map(info.macros);
+    info.macros.forEach(macro => {
+      macro.contextMacros?.forEach((ctxMacro, ctxName) => {
+        if (!importedMacros.has(ctxName)) {
+          importedMacros.set(ctxName, ctxMacro);
+        }
+      });
+    });
+
     info.macros.forEach((m, name) => {
       const namespaced = node.alias ? `${node.alias}.${name}` : name;
-      const macroContext = m.contextMacros ? new Map(m.contextMacros) : new Map(info.macros);
+      const macroContext = new Map(importedMacros);
+      m.contextMacros?.forEach((ctxMacro, ctxName) => {
+        macroContext.set(ctxName, ctxMacro);
+      });
       const macroInfo: MacroInfo = { ...m, name: namespaced, contextMacros: macroContext };
       this.symbolTable.currentScope.macros.set(namespaced, macroInfo);
       this.semanticInfo.macros.set(namespaced, macroInfo);
@@ -673,8 +729,20 @@ export class SemanticAnalyzer {
       return;
     }
 
+    const includedMacros = new Map(info.macros);
+    info.macros.forEach(macro => {
+      macro.contextMacros?.forEach((ctxMacro, ctxName) => {
+        if (!includedMacros.has(ctxName)) {
+          includedMacros.set(ctxName, ctxMacro);
+        }
+      });
+    });
+
     info.macros.forEach((macro, name) => {
-      const macroContext = macro.contextMacros ? new Map(macro.contextMacros) : new Map(info.macros);
+      const macroContext = new Map(includedMacros);
+      macro.contextMacros?.forEach((ctxMacro, ctxName) => {
+        macroContext.set(ctxName, ctxMacro);
+      });
       const macroInfo: MacroInfo = { ...macro, name, contextMacros: macroContext };
       this.symbolTable.currentScope.macros.set(name, macroInfo);
       this.semanticInfo.macros.set(name, macroInfo);
@@ -931,8 +999,8 @@ export class SemanticAnalyzer {
       const parser = new FreeMarkerParser(tokens);
       const ast = parser.parse();
       const analyzer = new SemanticAnalyzer();
-      return analyzer.analyze(ast, undefined, {
-        filePath: normalizedPath,
+      analyzer.setErrorReporter(this.errorReporter ?? new ErrorReporter());
+      return analyzer.analyze(ast, normalizedPath, {
         templateRoots: this.context.templateRoots,
         visited: visitedSet
       });

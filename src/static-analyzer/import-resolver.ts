@@ -56,7 +56,7 @@ export class ImportResolver {
       edges: new Map(),
       circularDependencies: []
     };
-    
+
     this.options = {
       basePath: process.cwd(),
       templateDirectories: ['templates', 'views', 'src'],
@@ -66,6 +66,27 @@ export class ImportResolver {
       cacheEnabled: true,
       ...options
     };
+
+    this.configureAnalyzerTemplateRoots();
+  }
+
+  private configureAnalyzerTemplateRoots(): void {
+    const roots = new Set<string>();
+    roots.add(path.resolve(this.options.basePath));
+
+    this.options.templateDirectories.forEach(dir => {
+      if (!dir) {
+        return;
+      }
+
+      if (path.isAbsolute(dir)) {
+        roots.add(path.normalize(dir));
+      } else {
+        roots.add(path.resolve(this.options.basePath, dir));
+      }
+    });
+
+    this.analyzer.setTemplateRoots(Array.from(roots));
   }
 
   public async resolveImports(rootUri: string, content?: string): Promise<DependencyGraph> {

@@ -44,6 +44,7 @@ export enum TokenType {
   
   RANGE = 'RANGE',                       // ..
   RANGE_INCLUSIVE = 'RANGE_INCLUSIVE',   // ...
+  ARROW = 'ARROW',                       // ->
   
   // Built-in operators
   BUILTIN_START = 'BUILTIN_START',       // ?
@@ -122,6 +123,7 @@ export class FreeMarkerLexer {
   private line: number = 1;
   private character: number = 1;
   private tokens: Token[] = [];
+  private inDirective = false;
 
   private keywords = new Map([
     ['if', TokenType.IF],
@@ -160,6 +162,7 @@ export class FreeMarkerLexer {
     this.line = 1;
     this.character = 1;
     this.tokens = [];
+    this.inDirective = false;
 
     while (!this.isAtEnd()) {
       this.scanToken();
@@ -307,7 +310,10 @@ export class FreeMarkerLexer {
   }
 
   private scanMinus(): void {
-    if (this.peek() === '-') {
+    if (this.peek() === '>') {
+      this.advance();
+      this.addToken(TokenType.ARROW, '->');
+    } else if (this.peek() === '-') {
       this.advance();
       this.addToken(TokenType.DECREMENT, '--');
     } else if (this.peek() === '=') {
@@ -381,11 +387,37 @@ export class FreeMarkerLexer {
         this.scanComment();
         return;
       } else {
+        this.inDirective = true;
         this.addToken(TokenType.DIRECTIVE_START, '<#');
         return;
       }
+    } else if (this.peek() === '/' && this.peekNext() === '#') {
+      this.advance(); // consume /
+      this.advance(); // consume #
+      this.inDirective = true;
+      this.addToken(TokenType.DIRECTIVE_START, '<#');
+      const start = this.position;
+      while (this.isAlphaNumeric(this.peek())) {
+        this.advance();
+      }
+      const name = '/' + this.content.slice(start, this.position);
+      this.addToken(TokenType.IDENTIFIER, name);
+      return;
+    } else if (this.peek() === '/' && this.peekNext() === '@') {
+      this.advance(); // consume /
+      this.advance(); // consume @
+      this.inDirective = true;
+      this.addToken(TokenType.MACRO_START, '<@');
+      const start = this.position;
+      while (this.isAlphaNumeric(this.peek())) {
+        this.advance();
+      }
+      const name = '/' + this.content.slice(start, this.position);
+      this.addToken(TokenType.IDENTIFIER, name);
+      return;
     } else if (this.peek() === '@') {
       this.advance(); // consume @
+      this.inDirective = true;
       this.addToken(TokenType.MACRO_START, '<@');
     } else if (this.peek() === '=') {
       this.advance();
@@ -400,7 +432,12 @@ export class FreeMarkerLexer {
       this.advance();
       this.addToken(TokenType.GREATER_EQUAL, '>=');
     } else {
-      this.addToken(TokenType.GREATER_THAN, '>');
+      if (this.inDirective) {
+        this.inDirective = false;
+        this.addToken(TokenType.DIRECTIVE_END, '>');
+      } else {
+        this.addToken(TokenType.GREATER_THAN, '>');
+      }
     }
   }
 
@@ -535,7 +572,8 @@ export class FreeMarkerLexer {
   private addToken(type: TokenType, value: string): void {
     const position = this.getCurrentPosition();
     position.character -= value.length;
-    
+    position.offset -= value.length;
+
     this.tokens.push({
       type,
       value,

@@ -36,6 +36,13 @@ export interface FunctionNode extends ASTNode {
   returnType?: string;
 }
 
+export interface MacroCallNode extends ASTNode {
+  type: 'MacroCall';
+  name: string;
+  parameters: ParameterNode[];
+  body?: ASTNode[];
+}
+
 export interface InterpolationNode extends ASTNode {
   type: 'Interpolation';
   expression: ExpressionNode;
@@ -56,6 +63,23 @@ export interface LiteralNode extends ExpressionNode {
   type: 'Literal';
   value: any;
   dataType: 'string' | 'number' | 'boolean';
+}
+
+export interface ListLiteralNode extends ExpressionNode {
+  type: 'ListLiteral';
+  items: ExpressionNode[];
+}
+
+export interface HashEntryNode extends ASTNode {
+  type: 'HashEntry';
+  key?: string;
+  keyExpression?: ExpressionNode;
+  value: ExpressionNode;
+}
+
+export interface HashLiteralNode extends ExpressionNode {
+  type: 'HashLiteral';
+  entries: HashEntryNode[];
 }
 
 export interface BinaryExpressionNode extends ExpressionNode {
@@ -83,6 +107,24 @@ export interface PropertyAccessNode extends ExpressionNode {
   property: string;
 }
 
+export interface BuiltInNode extends ExpressionNode {
+  type: 'BuiltIn';
+  name: string;
+  target: ExpressionNode;
+  arguments?: ExpressionNode[];
+}
+
+export interface ExistsNode extends ExpressionNode {
+  type: 'Exists';
+  target: ExpressionNode;
+}
+
+export interface FallbackNode extends ExpressionNode {
+  type: 'Fallback';
+  target: ExpressionNode;
+  fallback: ExpressionNode;
+}
+
 export interface AssignmentNode extends ASTNode {
   type: 'Assignment';
   variable: string;
@@ -101,12 +143,19 @@ export interface IncludeNode extends ASTNode {
   type: 'Include';
   path: string;
   resolvedPath?: string;
+  optional?: boolean;
 }
 
 export interface ParameterNode extends ASTNode {
   type: 'Parameter';
-  name: string;
-  value?: ExpressionNode;
+  name?: string;
+  value: ExpressionNode;
+}
+
+export interface LambdaExpressionNode extends ExpressionNode {
+  type: 'Lambda';
+  parameters: string[];
+  body: ExpressionNode;
 }
 
 export interface IfNode extends ASTNode {
@@ -118,8 +167,9 @@ export interface IfNode extends ASTNode {
 
 export interface ListNode extends ASTNode {
   type: 'List';
-  item: string;
   iterable: ExpressionNode;
+  item: string;
+  key?: string;
   body: ASTNode[];
 }
 
@@ -181,6 +231,8 @@ export class FreeMarkerParser {
   private parseTopLevel(): ASTNode | null {
     if (this.match(TokenType.DIRECTIVE_START)) {
       return this.parseDirective();
+    } else if (this.match(TokenType.MACRO_START)) {
+      return this.parseMacroCall();
     } else if (this.match(TokenType.INTERPOLATION_START)) {
       return this.parseInterpolation();
     } else if (this.match(TokenType.TEXT)) {
@@ -197,10 +249,6 @@ export class FreeMarkerParser {
 
   private parseDirective(): ASTNode | null {
     const nameToken = this.peek();
-    if (nameToken.type !== TokenType.IDENTIFIER) {
-      return null;
-    }
-    
     const name = nameToken.value;
     this.advance();
 
@@ -240,15 +288,72 @@ export class FreeMarkerParser {
     } as DirectiveNode;
   }
 
+  private parseMacroCall(): MacroCallNode | ImportNode | IncludeNode {
+    const nameParts: string[] = [];
+
+    const nameToken = this.peek();
+    const callStart = nameToken?.position ?? this.getCurrentPosition();
+    if (this.isIdentifierToken(nameToken)) {
+      nameParts.push(this.advance().value);
+      while (this.match(TokenType.DOT)) {
+        const partToken = this.peek();
+        if (this.isIdentifierToken(partToken)) {
+          nameParts.push('.' + this.advance().value);
+        } else {
+          break;
+        }
+      }
+    }
+
+    const name = nameParts.join('');
+    const parameters = this.parseParameters();
+    const selfClosing = this.match(TokenType.SLASH);
+    this.match(TokenType.DIRECTIVE_END);
+
+    if (name === 'import') {
+      const importNode = this.createImportFromMacro(parameters, callStart);
+      if (importNode) {
+        return importNode;
+      }
+    }
+
+    if (name === 'include') {
+      const includeNode = this.createIncludeFromMacro(parameters, callStart);
+      if (includeNode) {
+        return includeNode;
+      }
+    }
+
+    let body: ASTNode[] | undefined;
+    if (!selfClosing) {
+      body = this.parseDirectiveBody();
+    }
+
+    const rangeEnd = this.getCurrentPosition();
+
+    return {
+      type: 'MacroCall',
+      name,
+      parameters,
+      body,
+      position: callStart,
+      range: {
+        start: callStart,
+        end: rangeEnd
+      }
+    };
+  }
+
   private parseAssignment(): AssignmentNode | null {
+    this.skipWhitespace();
     const variableName = this.advance().value;
-    
+
     if (!this.match(TokenType.ASSIGN)) {
       return null;
     }
     
     const value = this.parseExpression();
-    this.match(TokenType.DIRECTIVE_END);
+    this.consumeDirectiveEnd();
     
     return {
       type: 'Assignment',
@@ -264,24 +369,31 @@ export class FreeMarkerParser {
   }
 
   private parseImport(): ImportNode {
-    const path = this.advance().value;
+    this.skipWhitespace();
+    const pathToken = this.advance();
+    const path = this.stripQuotes(pathToken.value);
     let alias = '';
-    
+
     if (this.match(TokenType.AS)) {
-      alias = this.advance().value;
+      this.skipWhitespace();
+      alias = this.stripQuotes(this.advance().value);
     }
-    
-    this.match(TokenType.DIRECTIVE_END);
-    
+
+    this.consumeDirectiveEnd();
+
+    const start = pathToken.position;
+    const end = {
+      line: start.line,
+      character: start.character + pathToken.length,
+      offset: start.offset + pathToken.length
+    };
+
     const importNode: ImportNode = {
       type: 'Import',
-      path: path.replace(/['"]/g, ''),
+      path,
       alias,
-      position: this.getCurrentPosition(),
-      range: {
-        start: this.getCurrentPosition(),
-        end: this.getCurrentPosition()
-      }
+      position: start,
+      range: { start, end }
     };
     
     this.imports.push(importNode);
@@ -289,19 +401,66 @@ export class FreeMarkerParser {
   }
 
   private parseInclude(): IncludeNode {
-    const path = this.advance().value;
-    this.match(TokenType.DIRECTIVE_END);
-    
+    this.skipWhitespace();
+
+    let includePath = '';
+    let includeStart = this.getCurrentPosition();
+    let includeEnd = includeStart;
+    let optional = false;
+
+    while (!this.check(TokenType.DIRECTIVE_END) && !this.isAtEnd()) {
+      if (this.check(TokenType.SLASH)) {
+        break;
+      }
+
+      const nextToken = this.peek();
+      if (nextToken.type === TokenType.STRING_LITERAL) {
+        const token = this.advance();
+        includePath = token.value;
+        includeStart = token.position;
+        includeEnd = {
+          line: token.position.line,
+          character: token.position.character + token.length,
+          offset: token.position.offset + token.length
+        };
+      } else {
+        const nameToken = this.advance();
+        const paramName = nameToken.value?.toLowerCase();
+        if (paramName === 'path') {
+          if (this.match(TokenType.ASSIGN)) {
+            const expr = this.parseExpression();
+            includePath = this.extractStringValue(expr) ?? includePath;
+            if (expr?.range) {
+              includeStart = expr.range.start;
+              includeEnd = expr.range.end;
+            }
+          }
+        } else if (paramName === 'optional') {
+          if (this.match(TokenType.ASSIGN)) {
+            const expr = this.parseExpression();
+            const value = this.extractBooleanValue(expr);
+            if (typeof value === 'boolean') {
+              optional = value;
+            }
+          }
+        } else if (this.match(TokenType.ASSIGN)) {
+          this.parseExpression();
+        }
+      }
+
+      this.skipWhitespace();
+    }
+
+    this.consumeDirectiveEnd();
+
     const includeNode: IncludeNode = {
       type: 'Include',
-      path: path.replace(/['"]/g, ''),
-      position: this.getCurrentPosition(),
-      range: {
-        start: this.getCurrentPosition(),
-        end: this.getCurrentPosition()
-      }
+      path: this.stripQuotes(includePath),
+      position: includeStart,
+      range: { start: includeStart, end: includeEnd },
+      optional
     };
-    
+
     this.includes.push(includeNode);
     return includeNode;
   }
@@ -333,21 +492,34 @@ export class FreeMarkerParser {
   }
 
   private parseList(): ListNode {
-    const item = this.advance().value;
-    
+    const iterable = this.parseExpression();
+
     if (!this.match(TokenType.AS)) {
       throw new Error('Expected "as" in list directive');
     }
-    
-    const iterable = this.parseExpression();
+
+    this.skipWhitespace();
+    const firstVar = this.advance().value;
+    let item = firstVar;
+    let key: string | undefined;
+
+    this.skipWhitespace();
+    if (this.match(TokenType.COMMA)) {
+      this.skipWhitespace();
+      const secondVar = this.advance().value;
+      key = firstVar;
+      item = secondVar;
+    }
+
     this.match(TokenType.DIRECTIVE_END);
-    
+
     const body = this.parseDirectiveBody();
-    
+
     return {
       type: 'List',
-      item,
       iterable,
+      item,
+      key,
       body,
       position: this.getCurrentPosition(),
       range: {
@@ -403,6 +575,7 @@ export class FreeMarkerParser {
   }
 
   private parseMacro(): MacroNode {
+    this.skipWhitespace();
     const name = this.advance().value;
     const parameters: string[] = [];
     
@@ -432,6 +605,7 @@ export class FreeMarkerParser {
   }
 
   private parseFunction(): FunctionNode {
+    this.skipWhitespace();
     const name = this.advance().value;
     const parameters: string[] = [];
     
@@ -618,7 +792,13 @@ export class FreeMarkerParser {
   private parseCallExpression(): ExpressionNode {
     let expr = this.parsePrimaryExpression();
 
-    while (this.check(TokenType.DOT) || this.check(TokenType.LPAREN)) {
+    while (
+      this.check(TokenType.DOT) ||
+      this.check(TokenType.LPAREN) ||
+      this.check(TokenType.QUESTION) ||
+      this.check(TokenType.NOT) ||
+      this.check(TokenType.ARROW)
+    ) {
       if (this.match(TokenType.DOT)) {
         const property = this.advance().value;
         expr = {
@@ -650,61 +830,242 @@ export class FreeMarkerParser {
             end: this.getCurrentPosition()
           }
         } as any;
+      } else if (this.match(TokenType.QUESTION)) {
+        if (this.match(TokenType.QUESTION)) {
+          expr = {
+            type: 'Exists',
+            target: expr,
+            position: expr.position,
+            range: {
+              start: expr.range.start,
+              end: this.getCurrentPosition()
+            }
+          } as any;
+        } else {
+          const name = this.advance().value;
+          let args: ExpressionNode[] | undefined;
+          if (this.match(TokenType.LPAREN)) {
+            args = [];
+            if (!this.check(TokenType.RPAREN)) {
+              do {
+                args.push(this.parseExpression());
+              } while (this.match(TokenType.COMMA));
+            }
+            this.match(TokenType.RPAREN);
+          }
+          expr = {
+            type: 'BuiltIn',
+            name,
+            target: expr,
+            arguments: args,
+            position: expr.position,
+            range: {
+              start: expr.range.start,
+              end: this.getCurrentPosition()
+            }
+          } as any;
+        }
+      } else if (this.match(TokenType.ARROW)) {
+        const parameters: string[] = [];
+        if (expr.type === 'Variable') {
+          parameters.push((expr as VariableNode).name);
+        } else if (expr.type === 'ListLiteral') {
+          (expr as ListLiteralNode).items.forEach(item => {
+            if (item.type === 'Variable') {
+              parameters.push((item as VariableNode).name);
+            }
+          });
+        }
+
+        const body = this.parseExpression();
+        const start = expr.range?.start ?? expr.position;
+        const end = body.range?.end ?? this.getCurrentPosition();
+
+        expr = {
+          type: 'Lambda',
+          parameters,
+          body,
+          position: start,
+          range: { start, end }
+        } as any;
+      } else if (this.match(TokenType.NOT)) {
+        const fallbackExpr = this.parseExpression();
+        const endPos = fallbackExpr.range ? fallbackExpr.range.end : this.getCurrentPosition();
+        expr = {
+          type: 'Fallback',
+          target: expr,
+          fallback: fallbackExpr,
+          position: expr.position,
+          range: {
+            start: expr.range.start,
+            end: endPos
+          }
+        } as any;
+        break;
+      } else {
+        break;
       }
     }
-    
+
     return expr;
   }
 
   private parsePrimaryExpression(): ExpressionNode {
     if (this.match(TokenType.STRING_LITERAL)) {
+      const token = this.previous();
+      const start = token.position;
+      const end = {
+        line: start.line,
+        character: start.character + token.length,
+        offset: start.offset + token.length
+      };
       return {
         type: 'Literal',
-        value: this.previous().value,
+        value: token.value,
         dataType: 'string',
-        position: this.getCurrentPosition(),
-        range: {
-          start: this.getCurrentPosition(),
-          end: this.getCurrentPosition()
-        }
+        position: start,
+        range: { start, end }
       } as any;
     }
-    
+
     if (this.match(TokenType.NUMBER_LITERAL)) {
+      const token = this.previous();
+      const start = token.position;
+      const end = {
+        line: start.line,
+        character: start.character + token.length,
+        offset: start.offset + token.length
+      };
       return {
         type: 'Literal',
-        value: parseFloat(this.previous().value),
+        value: parseFloat(token.value),
         dataType: 'number',
-        position: this.getCurrentPosition(),
-        range: {
-          start: this.getCurrentPosition(),
-          end: this.getCurrentPosition()
-        }
+        position: start,
+        range: { start, end }
       } as any;
     }
-    
+
     if (this.match(TokenType.BOOLEAN_LITERAL)) {
+      const token = this.previous();
+      const start = token.position;
+      const end = {
+        line: start.line,
+        character: start.character + token.length,
+        offset: start.offset + token.length
+      };
       return {
         type: 'Literal',
-        value: this.previous().value === 'true',
+        value: token.value === 'true',
         dataType: 'boolean',
-        position: this.getCurrentPosition(),
-        range: {
-          start: this.getCurrentPosition(),
-          end: this.getCurrentPosition()
-        }
+        position: start,
+        range: { start, end }
       } as any;
     }
-    
+
+    if (this.match(TokenType.LBRACKET)) {
+      const startToken = this.previous();
+      const items: ExpressionNode[] = [];
+
+      if (!this.check(TokenType.RBRACKET)) {
+        do {
+          const item = this.parseExpression();
+          items.push(item);
+        } while (this.match(TokenType.COMMA));
+      }
+
+      this.match(TokenType.RBRACKET);
+      const endToken = this.previous();
+      const start = startToken.position;
+      const end = {
+        line: endToken.position.line,
+        character: endToken.position.character + endToken.length,
+        offset: endToken.position.offset + endToken.length
+      };
+
+      return {
+        type: 'ListLiteral',
+        items,
+        position: start,
+        range: { start, end }
+      } as any;
+    }
+
+    if (this.match(TokenType.LBRACE)) {
+      const startToken = this.previous();
+      const entries: HashEntryNode[] = [];
+
+      while (!this.check(TokenType.RBRACE) && !this.isAtEnd()) {
+        this.skipWhitespace();
+        if (this.check(TokenType.RBRACE)) {
+          break;
+        }
+
+        let key: string | undefined;
+        let keyExpression: ExpressionNode | undefined;
+        let entryStart = this.getCurrentPosition();
+
+        if (this.check(TokenType.STRING_LITERAL)) {
+          const token = this.advance();
+          key = this.stripQuotes(token.value);
+          entryStart = token.position;
+        } else if (this.check(TokenType.IDENTIFIER)) {
+          const token = this.advance();
+          key = token.value;
+          entryStart = token.position;
+        } else {
+          keyExpression = this.parseExpression();
+          entryStart = keyExpression.position;
+        }
+
+        this.match(TokenType.COLON);
+        const value = this.parseExpression();
+        const valueRange = value.range ?? { start: value.position, end: value.position };
+
+        const entry: HashEntryNode = {
+          type: 'HashEntry',
+          key,
+          keyExpression,
+          value,
+          position: entryStart,
+          range: { start: entryStart, end: valueRange.end }
+        };
+        entries.push(entry);
+
+        if (!this.match(TokenType.COMMA)) {
+          break;
+        }
+      }
+
+      this.match(TokenType.RBRACE);
+      const endToken = this.previous();
+      const start = startToken.position;
+      const end = {
+        line: endToken.position.line,
+        character: endToken.position.character + endToken.length,
+        offset: endToken.position.offset + endToken.length
+      };
+
+      return {
+        type: 'HashLiteral',
+        entries,
+        position: start,
+        range: { start, end }
+      } as any;
+    }
+
     if (this.match(TokenType.IDENTIFIER)) {
+      const token = this.previous();
+      const start = token.position;
+      const end = {
+        line: start.line,
+        character: start.character + token.length,
+        offset: start.offset + token.length
+      };
       return {
         type: 'Variable',
-        name: this.previous().value,
-        position: this.getCurrentPosition(),
-        range: {
-          start: this.getCurrentPosition(),
-          end: this.getCurrentPosition()
-        }
+        name: token.value,
+        position: start,
+        range: { start, end }
       } as any;
     }
     
@@ -743,7 +1104,7 @@ export class FreeMarkerParser {
 
   private parseText(): TextNode {
     const content = this.previous().value;
-    
+
     return {
       type: 'Text',
       content,
@@ -757,36 +1118,51 @@ export class FreeMarkerParser {
 
   private parseParameters(): ParameterNode[] {
     const parameters: ParameterNode[] = [];
-    
+
     while (!this.check(TokenType.DIRECTIVE_END) && !this.isAtEnd()) {
-      const name = this.advance().value;
-      let value: ExpressionNode | undefined;
-      
-      if (this.match(TokenType.ASSIGN)) {
+      this.skipWhitespace();
+      if (this.check(TokenType.DIRECTIVE_END) || this.check(TokenType.SLASH)) {
+        break;
+      }
+
+      const startToken = this.peek();
+      let name: string | undefined;
+      let value: ExpressionNode;
+
+      if (
+        startToken.type === TokenType.IDENTIFIER &&
+        this.peekNextNonWhitespace().type === TokenType.ASSIGN
+      ) {
+        name = this.advance().value;
+        this.match(TokenType.ASSIGN);
+        value = this.parseExpression();
+      } else {
         value = this.parseExpression();
       }
-      
+
+      const position = value?.position ?? startToken.position ?? this.getCurrentPosition();
+      const range = value?.range ?? { start: position, end: position };
+
       parameters.push({
         type: 'Parameter',
         name,
         value,
-        position: this.getCurrentPosition(),
-        range: {
-          start: this.getCurrentPosition(),
-          end: this.getCurrentPosition()
-        }
+        position,
+        range
       });
     }
-    
+
     return parameters;
   }
 
   private parseDirectiveBody(): ASTNode[] {
     const body: ASTNode[] = [];
-    
+
     while (!this.isAtEnd()) {
       if (this.checkDirectiveEnd()) {
-        this.advance();
+        this.advance(); // consume start
+        this.advance(); // consume name
+        this.match(TokenType.DIRECTIVE_END);
         break;
       }
       
@@ -795,17 +1171,132 @@ export class FreeMarkerParser {
         body.push(node);
       }
     }
-    
+
     return body;
   }
 
+  private createImportFromMacro(parameters: ParameterNode[], fallbackPosition: Position): ImportNode | undefined {
+    if (parameters.length === 0) {
+      return undefined;
+    }
+
+    const pathParam =
+      parameters.find(param => (param.name ?? '').toLowerCase() === 'path') ||
+      parameters.find(param => (param.name ?? '').toLowerCase() === 'from') ||
+      parameters[0];
+
+    if (!pathParam) {
+      return undefined;
+    }
+
+    const rawPath =
+      this.extractStringValue(pathParam.value) ?? this.extractIdentifierValue(pathParam.value);
+    if (!rawPath) {
+      return undefined;
+    }
+
+    const aliasParam = parameters.find(param => {
+      const key = (param.name ?? '').toLowerCase();
+      return key === 'ns' || key === 'as' || key === 'namespace';
+    });
+
+    const rawAlias = aliasParam
+      ? this.extractStringValue(aliasParam.value) ?? this.extractIdentifierValue(aliasParam.value)
+      : undefined;
+
+    const alias = rawAlias ? this.stripQuotes(rawAlias) : '';
+
+    const start = pathParam.value?.range?.start ?? pathParam.position ?? fallbackPosition;
+    const end = pathParam.value?.range?.end ?? pathParam.range?.end ?? start;
+
+    const importNode: ImportNode = {
+      type: 'Import',
+      path: this.stripQuotes(rawPath),
+      alias,
+      position: start,
+      range: { start, end }
+    };
+
+    this.imports.push(importNode);
+    return importNode;
+  }
+
+  private createIncludeFromMacro(parameters: ParameterNode[], fallbackPosition: Position): IncludeNode | undefined {
+    if (parameters.length === 0) {
+      return undefined;
+    }
+
+    const pathParam =
+      parameters.find(param => (param.name ?? '').toLowerCase() === 'path') || parameters[0];
+
+    if (!pathParam) {
+      return undefined;
+    }
+
+    const rawPath =
+      this.extractStringValue(pathParam.value) ?? this.extractIdentifierValue(pathParam.value);
+    if (!rawPath) {
+      return undefined;
+    }
+
+    const start = pathParam.value?.range?.start ?? pathParam.position ?? fallbackPosition;
+    const end = pathParam.value?.range?.end ?? pathParam.range?.end ?? start;
+
+    const optionalParam = parameters.find(param => (param.name ?? '').toLowerCase() === 'optional');
+    const optionalValue = optionalParam ? this.extractBooleanValue(optionalParam.value) : undefined;
+
+    const includeNode: IncludeNode = {
+      type: 'Include',
+      path: this.stripQuotes(rawPath),
+      position: start,
+      range: { start, end },
+      optional: typeof optionalValue === 'boolean' ? optionalValue : undefined
+    };
+
+    this.includes.push(includeNode);
+    return includeNode;
+  }
+
+  private consumeDirectiveEnd(): void {
+    this.match(TokenType.SLASH);
+    this.match(TokenType.DIRECTIVE_END);
+  }
+
+  private stripQuotes(value: string): string {
+    if (!value) {
+      return value;
+    }
+
+    let result = value;
+    if (result.startsWith('"') || result.startsWith("'")) {
+      result = result.substring(1);
+    }
+    if (result.endsWith('"') || result.endsWith("'")) {
+      result = result.substring(0, result.length - 1);
+    }
+
+    return result;
+  }
+
+  private extractIdentifierValue(expr?: ExpressionNode): string | undefined {
+    if (!expr) {
+      return undefined;
+    }
+
+    if (expr.type === 'Variable') {
+      return (expr as VariableNode).name;
+    }
+
+    return undefined;
+  }
+
   private checkDirective(name: string): boolean {
-    return this.check(TokenType.DIRECTIVE_START) && 
+    return this.check(TokenType.DIRECTIVE_START) &&
            this.tokens[this.current + 1]?.value === name;
   }
 
   private checkDirectiveEnd(): boolean {
-    return this.check(TokenType.DIRECTIVE_START) && 
+    return (this.check(TokenType.DIRECTIVE_START) || this.check(TokenType.MACRO_START)) &&
            this.tokens[this.current + 1]?.value?.startsWith('/');
   }
 
@@ -816,7 +1307,70 @@ export class FreeMarkerParser {
     this.match(TokenType.COMMENT_END);
   }
 
+  private extractStringValue(expr?: ExpressionNode): string | undefined {
+    if (!expr) {
+      return undefined;
+    }
+
+    if (expr.type === 'Literal') {
+      const literal = expr as LiteralNode;
+      if (literal.dataType === 'string') {
+        return literal.value;
+      }
+    }
+
+    return undefined;
+  }
+
+  private extractBooleanValue(expr?: ExpressionNode): boolean | undefined {
+    if (!expr) {
+      return undefined;
+    }
+
+    if (expr.type === 'Literal') {
+      const literal = expr as LiteralNode;
+      if (literal.dataType === 'boolean') {
+        return Boolean(literal.value);
+      }
+
+      if (literal.dataType === 'string') {
+        const normalized = this.stripQuotes(String(literal.value)).toLowerCase();
+        if (normalized === 'true') {
+          return true;
+        }
+        if (normalized === 'false') {
+          return false;
+        }
+      }
+    }
+
+    if (expr.type === 'Variable') {
+      const name = (expr as VariableNode).name.toLowerCase();
+      if (name === 'true') {
+        return true;
+      }
+      if (name === 'false') {
+        return false;
+      }
+    }
+
+    return undefined;
+  }
+
+  private isIdentifierToken(token: Token): boolean {
+    if (!token) {
+      return false;
+    }
+
+    if (token.type === TokenType.IDENTIFIER) {
+      return true;
+    }
+
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(token.value ?? '');
+  }
+
   private match(...types: TokenType[]): boolean {
+    this.skipWhitespace();
     for (const type of types) {
       if (this.check(type)) {
         this.advance();
@@ -827,6 +1381,7 @@ export class FreeMarkerParser {
   }
 
   private check(type: TokenType): boolean {
+    this.skipWhitespace();
     if (this.isAtEnd()) return false;
     return this.peek().type === type;
   }
@@ -834,6 +1389,15 @@ export class FreeMarkerParser {
   private advance(): Token {
     if (!this.isAtEnd()) this.current++;
     return this.previous();
+  }
+
+  private skipWhitespace(): void {
+    while (
+      !this.isAtEnd() &&
+      (this.peek().type === TokenType.WHITESPACE || this.peek().type === TokenType.NEWLINE)
+    ) {
+      this.current++;
+    }
   }
 
   private isAtEnd(): boolean {
@@ -845,6 +1409,19 @@ export class FreeMarkerParser {
       return { type: TokenType.EOF, value: '', position: { line: 0, character: 0, offset: 0 }, length: 0 };
     }
     return this.tokens[this.current];
+  }
+
+  private peekNextNonWhitespace(): Token {
+    let index = this.current + 1;
+    while (index < this.tokens.length) {
+      const token = this.tokens[index];
+      if (token.type !== TokenType.WHITESPACE && token.type !== TokenType.NEWLINE) {
+        return token;
+      }
+      index++;
+    }
+
+    return { type: TokenType.EOF, value: '', position: { line: 0, character: 0, offset: 0 }, length: 0 };
   }
 
   private previous(): Token {

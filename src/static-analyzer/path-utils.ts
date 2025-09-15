@@ -26,6 +26,7 @@ export function resolveTemplatePath(
   const candidates: string[] = [];
   const templateRoots = options.templateRoots ?? [];
   const currentDir = options.currentFile ? path.dirname(options.currentFile) : undefined;
+  const trimmedRef = normalizedRef.replace(/^[/\\]+/, '');
 
   const pushCandidate = (candidate: string | undefined): void => {
     if (!candidate) {
@@ -39,17 +40,29 @@ export function resolveTemplatePath(
 
   if (path.isAbsolute(normalizedRef)) {
     pushCandidate(normalizedRef);
-    const relativeRef = normalizedRef.replace(/^[/\\]+/, '');
-    templateRoots.forEach(root => pushCandidate(path.join(root, relativeRef)));
+    templateRoots.forEach(root => pushCandidate(path.join(root, trimmedRef)));
   } else {
     if (currentDir) {
       pushCandidate(path.resolve(currentDir, normalizedRef));
     }
-    const trimmed = normalizedRef.replace(/^[/\\]+/, '');
     templateRoots.forEach(root => {
-      pushCandidate(path.join(root, trimmed));
+      pushCandidate(path.join(root, trimmedRef));
       pushCandidate(path.resolve(root, normalizedRef));
     });
+  }
+
+  if (currentDir && trimmedRef && path.isAbsolute(normalizedRef)) {
+    let dir = currentDir;
+    const visited = new Set<string>();
+    while (!visited.has(dir)) {
+      visited.add(dir);
+      pushCandidate(path.join(dir, trimmedRef));
+      const parent = path.dirname(dir);
+      if (parent === dir) {
+        break;
+      }
+      dir = parent;
+    }
   }
 
   for (const candidate of candidates) {

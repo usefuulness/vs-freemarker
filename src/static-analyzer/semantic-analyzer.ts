@@ -468,6 +468,14 @@ export class SemanticAnalyzer {
         parent: this.symbolTable.currentScope
       };
 
+      if (macro.contextMacros) {
+        macro.contextMacros.forEach((availableMacro, macroName) => {
+          if (!macroScope.macros.has(macroName)) {
+            macroScope.macros.set(macroName, availableMacro);
+          }
+        });
+      }
+
       const positionalArgs = node.parameters.filter(param => !param.name);
       let positionalIndex = 0;
 
@@ -533,7 +541,8 @@ export class SemanticAnalyzer {
 
     info.macros.forEach((m, name) => {
       const namespaced = node.alias ? `${node.alias}.${name}` : name;
-      const macroInfo: MacroInfo = { ...m, name: namespaced };
+      const macroContext = m.contextMacros ? new Map(m.contextMacros) : new Map(info.macros);
+      const macroInfo: MacroInfo = { ...m, name: namespaced, contextMacros: macroContext };
       this.symbolTable.currentScope.macros.set(namespaced, macroInfo);
       this.semanticInfo.macros.set(namespaced, macroInfo);
     });
@@ -555,7 +564,8 @@ export class SemanticAnalyzer {
     }
 
     info.macros.forEach((macro, name) => {
-      const macroInfo: MacroInfo = { ...macro, name };
+      const macroContext = macro.contextMacros ? new Map(macro.contextMacros) : new Map(info.macros);
+      const macroInfo: MacroInfo = { ...macro, name, contextMacros: macroContext };
       this.symbolTable.currentScope.macros.set(name, macroInfo);
       this.semanticInfo.macros.set(name, macroInfo);
     });

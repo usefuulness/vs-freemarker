@@ -54,6 +54,7 @@ export interface MacroInfo {
   definedAt: Position;
   usages: Position[];
   node?: MacroNode;
+  contextMacros?: Map<string, MacroInfo>;
 }
 
 export interface FunctionInfo {

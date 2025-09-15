@@ -210,6 +210,41 @@ describe('FreeMarker Static Analyzer Integration', () => {
 
         expect(result.diagnostics.some(d => d.code === 'FTL2004' && d.message.includes('layout'))).toBe(false);
       });
+
+      test('resolves absolute imports using ancestor directories as template roots', () => {
+        const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-root-detect-'));
+        const templatesDir = path.join(workspaceDir, 'src', 'templates');
+        const projectDir = path.join(templatesDir, 'project');
+        fs.mkdirSync(projectDir, { recursive: true });
+
+        const helpersPath = path.join(projectDir, 'helpers.ftl');
+        fs.writeFileSync(helpersPath, '<#macro render col entry>${col}${entry.properties.status!""}</#macro>');
+
+        const batchPath = path.join(projectDir, 'batch.ftl');
+        fs.writeFileSync(
+          batchPath,
+          '<@import path="/project/helpers.ftl" ns="helpers" />' +
+            '<#macro result col entry><@helpers.render col entry /></#macro>'
+        );
+
+        const configDir = path.join(templatesDir, 'pages', 'admin', 'documents', 'import-dgf');
+        fs.mkdirSync(configDir, { recursive: true });
+
+        const template =
+          '<@import path="/project/batch.ftl" ns="batch" />' +
+          '<#assign col="result"/>' +
+          '<#assign entry = {"properties": {"status": "OPEN"}}/>' +
+          '<@batch.result col entry />';
+        const mainPath = path.join(configDir, 'config.ftl');
+        fs.writeFileSync(mainPath, template);
+
+        analyzer.setTemplateRoots([workspaceDir]);
+        const result = analyzer.analyze(template, mainPath);
+
+        expect(result.diagnostics.some(d => d.code === 'FTL4001')).toBe(false);
+        expect(result.diagnostics.some(d => d.code === 'FTL2004')).toBe(false);
+        expect(result.diagnostics.some(d => d.code === 'FTL2001')).toBe(false);
+      });
     });
 
   describe('Basic robustness', () => {

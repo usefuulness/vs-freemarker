@@ -1,6 +1,7 @@
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { FreeMarkerStaticAnalyzer, Range as AnalyzerRange } from './static-analyzer';
-import { ImportResolver } from './static-analyzer/import-resolver';
+import { ImportResolver, ResolverOptions } from './static-analyzer/import-resolver';
 
 let diagnosticCollection: vscode.DiagnosticCollection;
 let analyzer: FreeMarkerStaticAnalyzer;
@@ -12,6 +13,14 @@ export function activate(context: vscode.ExtensionContext): void {
   diagnosticCollection = vscode.languages.createDiagnosticCollection('freemarker');
   context.subscriptions.push(diagnosticCollection);
 
+  context.subscriptions.push(
+    vscode.commands.registerCommand('freemarker.clearImportCache', () => {
+      importResolver?.invalidateCache();
+      refreshOpenDocuments();
+      void vscode.window.showInformationMessage('FreeMarker template cache cleared.');
+    })
+  );
+
   if (vscode.window.activeTextEditor) {
     void refreshDiagnostics(vscode.window.activeTextEditor.document);
   }
@@ -19,7 +28,17 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     vscode.workspace.onDidOpenTextDocument(document => void refreshDiagnostics(document)),
     vscode.workspace.onDidChangeTextDocument(e => void refreshDiagnostics(e.document)),
-    vscode.workspace.onDidCloseTextDocument(doc => diagnosticCollection.delete(doc.uri))
+    vscode.workspace.onDidCloseTextDocument(doc => diagnosticCollection.delete(doc.uri)),
+    vscode.workspace.onDidChangeConfiguration(event => {
+      if (affectsImportResolverConfiguration(event)) {
+        updateImportResolverConfiguration();
+        refreshOpenDocuments();
+      }
+    }),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      updateImportResolverConfiguration();
+      refreshOpenDocuments();
+    })
   );
 }
 
@@ -70,33 +89,9 @@ export function deactivate(): void {
 }
 
 function createImportResolver(): ImportResolver {
-  const config = vscode.workspace.getConfiguration('freemarker');
-  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-  const basePath =
-    config.get<string>('importResolver.basePath')?.trim() || workspaceFolder?.uri.fsPath || process.cwd();
-
-  const templateDirectories = config.get<string[]>(
-    'importResolver.templateDirectories',
-    ['templates', 'views', 'src']
-  );
-  const extensions = config.get<string[]>(
-    'importResolver.extensions',
-    ['.ftl', '.ftlh', '.ftlx']
-  );
-  const maxDepth = config.get<number>('importResolver.maxDepth', 10);
-  const followSymlinks = config.get<boolean>('importResolver.followSymlinks', false);
-  const cacheEnabled = config.get<boolean>('importResolver.cacheEnabled', true);
-  const maxCacheSize = Math.max(0, config.get<number>('importResolver.maxCacheSize', 200));
-
-  return new ImportResolver(analyzer, {
-    basePath,
-    templateDirectories,
-    extensions,
-    maxDepth,
-    followSymlinks,
-    cacheEnabled,
-    maxCacheSize
-  });
+  const options = getImportResolverOptions();
+  applyTemplateRoots(options);
+  return new ImportResolver(analyzer, options);
 }
 
 function affectsImportResolverConfiguration(event: vscode.ConfigurationChangeEvent): boolean {
@@ -171,4 +166,104 @@ function adjustEndPosition(start: ZeroBasedPosition, end: ZeroBasedPosition): Ze
   }
 
   return end;
+}
+
+function getImportResolverOptions(): ResolverOptions {
+  const config = vscode.workspace.getConfiguration('freemarker');
+  const workspacePaths = getWorkspacePaths();
+  const configuredBase = config.get<string>('importResolver.basePath')?.trim();
+  const basePath = resolveBasePath(configuredBase, workspacePaths[0]);
+
+  const templateDirectories = (config.get<string[]>(
+    'importResolver.templateDirectories',
+    ['templates', 'views', 'src']
+  ) || [])
+    .map(dir => dir?.trim())
+    .filter((dir): dir is string => Boolean(dir));
+
+  const extensions = (config.get<string[]>(
+    'importResolver.extensions',
+    ['.ftl', '.ftlh', '.ftlx']
+  ) || [])
+    .map(ext => ext?.trim())
+    .filter((ext): ext is string => Boolean(ext));
+
+  const maxDepth = config.get<number>('importResolver.maxDepth', 10);
+  const followSymlinks = config.get<boolean>('importResolver.followSymlinks', false);
+  const cacheEnabled = config.get<boolean>('importResolver.cacheEnabled', true);
+  const maxCacheSize = Math.max(0, config.get<number>('importResolver.maxCacheSize', 200));
+
+  return {
+    basePath,
+    templateDirectories,
+    extensions,
+    maxDepth,
+    followSymlinks,
+    cacheEnabled,
+    maxCacheSize
+  };
+}
+
+function resolveBasePath(configuredBase: string | undefined, workspaceBase?: string): string {
+  const fallback = workspaceBase ? path.resolve(workspaceBase) : process.cwd();
+
+  if (!configuredBase) {
+    return fallback;
+  }
+
+  if (path.isAbsolute(configuredBase)) {
+    return path.resolve(configuredBase);
+  }
+
+  return path.resolve(fallback, configuredBase);
+}
+
+function applyTemplateRoots(options: ResolverOptions): void {
+  const workspacePaths = getWorkspacePaths();
+  const roots = new Set<string>();
+
+  roots.add(path.resolve(options.basePath));
+
+  workspacePaths.forEach(folderPath => {
+    roots.add(path.resolve(folderPath));
+  });
+
+  options.templateDirectories.forEach(dir => {
+    const normalized = dir.trim();
+    if (!normalized) {
+      return;
+    }
+
+    if (path.isAbsolute(normalized)) {
+      roots.add(path.resolve(normalized));
+    } else {
+      roots.add(path.resolve(options.basePath, normalized));
+      workspacePaths.forEach(folderPath => {
+        roots.add(path.resolve(folderPath, normalized));
+      });
+    }
+  });
+
+  analyzer.setTemplateRoots(Array.from(roots));
+}
+
+function getWorkspacePaths(): string[] {
+  return (vscode.workspace.workspaceFolders || []).map(folder => folder.uri.fsPath);
+}
+
+function updateImportResolverConfiguration(): void {
+  if (!importResolver) {
+    return;
+  }
+
+  const options = getImportResolverOptions();
+  applyTemplateRoots(options);
+  importResolver.updateOptions(options);
+  importResolver.invalidateCache();
+}
+
+function refreshOpenDocuments(): void {
+  vscode.workspace.textDocuments
+    .filter(doc => doc.languageId === 'ftl')
+    .forEach(doc => void refreshDiagnostics(doc));
 }

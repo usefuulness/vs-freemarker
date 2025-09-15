@@ -117,15 +117,23 @@ export class ErrorReporter {
     this.addDiagnostic('info', message, range, code, source);
   }
 
-  public addDiagnostic(severity: 'error' | 'warning' | 'info', message: string, range: Range, code?: string, source: string = 'FreeMarker'): void {
+  public addDiagnostic(
+    severity: 'error' | 'warning' | 'info',
+    message: string,
+    range?: Range,
+    code?: string,
+    source: string = 'FreeMarker'
+  ): void {
     if (code && this.suppressedCodes.has(code)) {
       return; // Skip suppressed diagnostics
     }
 
+    const safeRange = this.normalizeRange(range);
+
     const diagnostic: Diagnostic = {
       severity,
       message,
-      range,
+      range: safeRange,
       code,
       source
     };
@@ -245,6 +253,50 @@ export class ErrorReporter {
 
   public getDiagnostics(): Diagnostic[] {
     return [...this.diagnostics];
+  }
+
+  private normalizeRange(range?: Range): Range {
+    const start = this.normalizePosition(range?.start);
+    const end = this.normalizePosition(range?.end);
+
+    if (end.offset < start.offset) {
+      end.offset = start.offset;
+    }
+
+    if (end.line < start.line || (end.line === start.line && end.character < start.character)) {
+      end.line = start.line;
+      end.character = start.character;
+    }
+
+    return {
+      start,
+      end
+    };
+  }
+
+  private normalizePosition(position?: Position): Position {
+    if (!position) {
+      return { line: 1, character: 1, offset: 0 };
+    }
+
+    return {
+      line: this.normalizeNumber(position.line, 1, 1),
+      character: this.normalizeNumber(position.character, 1, 1),
+      offset: this.normalizeNumber(position.offset, 0, 0)
+    };
+  }
+
+  private normalizeNumber(value: number | undefined, fallback: number, minimum: number): number {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return fallback;
+    }
+
+    const normalized = Math.floor(value);
+    if (normalized < minimum) {
+      return minimum;
+    }
+
+    return normalized;
   }
 
   public getDiagnosticsByCategory(category: ErrorCategory): Diagnostic[] {

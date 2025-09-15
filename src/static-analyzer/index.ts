@@ -108,23 +108,6 @@ export class FreeMarkerStaticAnalyzer {
     this.parser = new FreeMarkerParser([]);
   }
 
-  public setTemplateRoots(roots: string[]): void {
-    if (roots.length === 0) {
-      this.templateRoots = [process.cwd()];
-      return;
-    }
-
-    this.templateRoots = roots
-      .filter(root => root && root.trim().length > 0)
-      .map(root => path.resolve(root));
-
-    if (this.templateRoots.length === 0) {
-      this.templateRoots = [process.cwd()];
-    }
-
-    this.dependencyCache.clear();
-  }
-
   public analyze(template: string, filePath?: string): AnalysisResult {
     this.profiler.start();
     this.errorReporter.clear();
@@ -162,15 +145,10 @@ export class FreeMarkerStaticAnalyzer {
           };
         }
 
-        // Semantic analysis
-        this.profiler.startPhase('semanticAnalysis');
-        const semanticInfo = this.semanticAnalyzer.analyze(ast, this.errorReporter, {
-          filePath,
-          templateRoots: this.templateRoots
-        });
-        this.profiler.endPhase('semanticAnalysis');
-
-      this.validateDependencies(template, ast, filePath);
+      // Semantic analysis
+      this.profiler.startPhase('semanticAnalysis');
+      const semanticInfo = this.semanticAnalyzer.analyze(ast, filePath);
+      this.profiler.endPhase('semanticAnalysis');
 
       // Collect diagnostics
       const diagnostics = this.errorReporter.getDiagnostics();

@@ -188,14 +188,14 @@ fi
 
 # Package the extension
 print_info "Packaging extension..."
-${VSCE_CMD} package --out "./dist/${EXTENSION_NAME}-${EXTENSION_VERSION}.vsix" || {
+${VSCE_CMD} package --out "./${EXTENSION_NAME}-${EXTENSION_VERSION}.vsix" || {
     print_error "Failed to package extension"
     exit 1
 }
 
 # Install the packaged extension
 print_info "Installing extension locally..."
-code --install-extension --force "./dist/${EXTENSION_NAME}-${EXTENSION_VERSION}.vsix" || {
+code --install-extension "./${EXTENSION_NAME}-${EXTENSION_VERSION}.vsix" --force || {
     print_error "Failed to install extension"
     exit 1
 }
@@ -237,7 +237,7 @@ print_info "3. Check the VS Code Extensions view to verify installation"
 read -p "Do you want to clean up the generated .vsix package? (y/N): " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    rm -f "./dist/${EXTENSION_NAME}-${EXTENSION_VERSION}.vsix"
+    rm -f "./${EXTENSION_NAME}-${EXTENSION_VERSION}.vsix"
     print_info "Package file cleaned up"
 fi
 

@@ -267,11 +267,15 @@ export class FreeMarkerParser {
   private parseMacroCall(): MacroCallNode {
     const nameParts: string[] = [];
 
-    if (this.check(TokenType.IDENTIFIER)) {
+    const nameToken = this.peek();
+    if (this.isIdentifierToken(nameToken)) {
       nameParts.push(this.advance().value);
       while (this.match(TokenType.DOT)) {
-        if (this.check(TokenType.IDENTIFIER)) {
+        const partToken = this.peek();
+        if (this.isIdentifierToken(partToken)) {
           nameParts.push('.' + this.advance().value);
+        } else {
+          break;
         }
       }
     }
@@ -351,19 +355,45 @@ export class FreeMarkerParser {
 
   private parseInclude(): IncludeNode {
     this.skipWhitespace();
-    const path = this.advance().value;
+
+    let includePath = '';
+
+    while (!this.check(TokenType.DIRECTIVE_END) && !this.isAtEnd()) {
+      if (this.check(TokenType.SLASH)) {
+        break;
+      }
+
+      const nextToken = this.peek();
+      if (nextToken.type === TokenType.STRING_LITERAL) {
+        includePath = this.advance().value;
+      } else {
+        const nameToken = this.advance();
+        if (nameToken.value === 'path') {
+          if (this.match(TokenType.ASSIGN)) {
+            const expr = this.parseExpression();
+            includePath = this.extractStringValue(expr) ?? includePath;
+          }
+        } else if (this.match(TokenType.ASSIGN)) {
+          this.parseExpression();
+        }
+      }
+
+      this.skipWhitespace();
+    }
+
+    this.match(TokenType.SLASH);
     this.match(TokenType.DIRECTIVE_END);
-    
+
     const includeNode: IncludeNode = {
       type: 'Include',
-      path: path.replace(/['"]/g, ''),
+      path: includePath.replace(/['"]/g, ''),
       position: this.getCurrentPosition(),
       range: {
         start: this.getCurrentPosition(),
         end: this.getCurrentPosition()
       }
     };
-    
+
     this.includes.push(includeNode);
     return includeNode;
   }
@@ -892,7 +922,7 @@ export class FreeMarkerParser {
 
   private parseText(): TextNode {
     const content = this.previous().value;
-    
+
     return {
       type: 'Text',
       content,
@@ -935,7 +965,7 @@ export class FreeMarkerParser {
 
   private parseDirectiveBody(): ASTNode[] {
     const body: ASTNode[] = [];
-    
+
     while (!this.isAtEnd()) {
       if (this.checkDirectiveEnd()) {
         this.advance(); // consume start
@@ -968,6 +998,33 @@ export class FreeMarkerParser {
       this.advance();
     }
     this.match(TokenType.COMMENT_END);
+  }
+
+  private extractStringValue(expr?: ExpressionNode): string | undefined {
+    if (!expr) {
+      return undefined;
+    }
+
+    if (expr.type === 'Literal') {
+      const literal = expr as LiteralNode;
+      if (literal.dataType === 'string') {
+        return literal.value;
+      }
+    }
+
+    return undefined;
+  }
+
+  private isIdentifierToken(token: Token): boolean {
+    if (!token) {
+      return false;
+    }
+
+    if (token.type === TokenType.IDENTIFIER) {
+      return true;
+    }
+
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(token.value ?? '');
   }
 
   private match(...types: TokenType[]): boolean {

@@ -6,6 +6,7 @@ let analyzer: FreeMarkerStaticAnalyzer;
 
 export function activate(context: vscode.ExtensionContext): void {
   analyzer = new FreeMarkerStaticAnalyzer();
+  updateTemplateRoots();
   diagnosticCollection = vscode.languages.createDiagnosticCollection('freemarker');
   context.subscriptions.push(diagnosticCollection);
 
@@ -21,8 +22,14 @@ export function activate(context: vscode.ExtensionContext): void {
     }),
     vscode.workspace.onDidOpenTextDocument(refreshDiagnostics),
     vscode.workspace.onDidChangeTextDocument(e => refreshDiagnostics(e.document)),
-    vscode.workspace.onDidCloseTextDocument(doc => diagnosticCollection.delete(doc.uri))
+    vscode.workspace.onDidCloseTextDocument(doc => diagnosticCollection.delete(doc.uri)),
+    vscode.workspace.onDidChangeWorkspaceFolders(updateTemplateRoots)
   );
+}
+
+function updateTemplateRoots(): void {
+  const roots = vscode.workspace.workspaceFolders?.map(folder => folder.uri.fsPath) ?? [];
+  analyzer.setTemplateRoots(roots);
 }
 
 function refreshDiagnostics(document: vscode.TextDocument): void {

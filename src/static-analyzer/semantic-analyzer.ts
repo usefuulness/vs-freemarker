@@ -27,9 +27,11 @@ import {
 import { FreeMarkerLexer } from './lexer';
 import { FreeMarkerParser } from './parser';
 import * as fs from 'fs';
+import * as path from 'path';
 
 import { SemanticInfo, VariableInfo, MacroInfo, FunctionInfo, ImportInfo } from './index';
 import { ErrorReporter } from './error-reporter';
+import { resolveTemplatePath } from './path-utils';
 
 export interface Scope {
   type: 'global' | 'local' | 'macro' | 'function' | 'loop';
@@ -50,6 +52,12 @@ export interface TypeInfo {
   nullable: boolean;
   enumerable?: boolean;
   properties?: Map<string, TypeInfo>;
+}
+
+interface AnalysisContext {
+  filePath?: string;
+  templateRoots: string[];
+  visited?: Set<string>;
 }
 
 export class SemanticAnalyzer {
@@ -76,13 +84,28 @@ export class SemanticAnalyzer {
     includes: [],
     imports: []
   };
-  
+
   private errors: string[] = [];
   private warnings: string[] = [];
+  private context: AnalysisContext = { templateRoots: [] };
 
-  public analyze(ast: TemplateNode, errorReporter?: ErrorReporter): SemanticInfo {
-    this.initializeAnalysis();
+  public analyze(
+    ast: TemplateNode,
+    errorReporter?: ErrorReporter,
+    context?: AnalysisContext
+  ): SemanticInfo {
     this.errorReporter = errorReporter;
+    this.context = {
+      templateRoots: context?.templateRoots ?? [],
+      filePath: context?.filePath,
+      visited: context?.visited ?? new Set<string>()
+    };
+
+    this.initializeAnalysis();
+
+    if (this.context.filePath) {
+      this.context.visited?.add(path.normalize(this.context.filePath));
+    }
 
     if (ast) {
       this.analyzeNode(ast);
@@ -473,41 +496,67 @@ export class SemanticAnalyzer {
   }
 
   private analyzeImport(node: ImportNode): void {
+    const resolvedPath = node.resolvedPath ?? this.resolveTemplateReference(node.path);
     const importInfo: ImportInfo = {
       path: node.path,
       alias: node.alias,
-      resolvedPath: node.resolvedPath
+      resolvedPath
     };
     this.semanticInfo.imports.push(importInfo);
 
-    const importPath = node.resolvedPath || node.path;
-    try {
-      if (fs.existsSync(importPath)) {
-        const content = fs.readFileSync(importPath, 'utf8');
-        const lexer = new FreeMarkerLexer();
-        const tokens = lexer.tokenize(content);
-        const parser = new FreeMarkerParser(tokens);
-        const ast = parser.parse();
-        const analyzer = new SemanticAnalyzer();
-        const info = analyzer.analyze(ast);
-        info.macros.forEach((m, name) => {
-          const namespaced = node.alias ? `${node.alias}.${name}` : name;
-          const macroInfo: MacroInfo = { ...m, name: namespaced };
-          this.symbolTable.currentScope.macros.set(namespaced, macroInfo);
-          this.semanticInfo.macros.set(namespaced, macroInfo);
-        });
-      } else if (this.errorReporter) {
-        this.errorReporter.addError(`Import not found: ${node.path}`, node.range, 'FTL4001');
-      }
-    } catch (err) {
-      if (this.errorReporter) {
-        this.errorReporter.addError(`Failed to import ${node.path}: ${(err as Error).message}`, node.range, 'FTL4001');
-      }
+    if (!resolvedPath) {
+      return;
     }
+
+    node.resolvedPath = resolvedPath;
+
+    const info = this.loadExternalTemplate(resolvedPath);
+    if (!info) {
+      return;
+    }
+
+    info.macros.forEach((m, name) => {
+      const namespaced = node.alias ? `${node.alias}.${name}` : name;
+      const macroInfo: MacroInfo = { ...m, name: namespaced };
+      this.symbolTable.currentScope.macros.set(namespaced, macroInfo);
+      this.semanticInfo.macros.set(namespaced, macroInfo);
+    });
   }
 
   private analyzeInclude(node: IncludeNode): void {
     this.semanticInfo.includes.push(node.path);
+
+    const resolvedPath = node.resolvedPath ?? this.resolveTemplateReference(node.path);
+    if (!resolvedPath) {
+      return;
+    }
+
+    node.resolvedPath = resolvedPath;
+
+    const info = this.loadExternalTemplate(resolvedPath);
+    if (!info) {
+      return;
+    }
+
+    info.macros.forEach((macro, name) => {
+      const macroInfo: MacroInfo = { ...macro, name };
+      this.symbolTable.currentScope.macros.set(name, macroInfo);
+      this.semanticInfo.macros.set(name, macroInfo);
+    });
+
+    info.functions.forEach((fn, name) => {
+      const functionInfo: FunctionInfo = { ...fn, name };
+      this.symbolTable.currentScope.functions.set(name, functionInfo);
+      this.semanticInfo.functions.set(name, functionInfo);
+    });
+
+    info.variables.forEach((variable, name) => {
+      if (!this.symbolTable.currentScope.variables.has(name)) {
+        const variableInfo: VariableInfo = { ...variable, name };
+        this.symbolTable.currentScope.variables.set(name, variableInfo);
+        this.semanticInfo.variables.set(name, variableInfo);
+      }
+    });
   }
 
   private analyzeDirective(node: DirectiveNode): void {
@@ -664,6 +713,42 @@ export class SemanticAnalyzer {
   private analyzeFallback(node: FallbackNode): TypeInfo {
     this.analyzeExpression(node.target, true);
     return this.analyzeExpression(node.fallback);
+  }
+
+  private resolveTemplateReference(templatePath: string): string | undefined {
+    return resolveTemplatePath(templatePath, {
+      currentFile: this.context.filePath,
+      templateRoots: this.context.templateRoots
+    });
+  }
+
+  private loadExternalTemplate(filePath: string): SemanticInfo | undefined {
+    const normalizedPath = path.normalize(filePath);
+
+    if (this.context.visited?.has(normalizedPath)) {
+      return undefined;
+    }
+
+    const visitedSet = this.context.visited;
+    visitedSet?.add(normalizedPath);
+
+    try {
+      const content = fs.readFileSync(normalizedPath, 'utf8');
+      const lexer = new FreeMarkerLexer();
+      const tokens = lexer.tokenize(content);
+      const parser = new FreeMarkerParser(tokens);
+      const ast = parser.parse();
+      const analyzer = new SemanticAnalyzer();
+      return analyzer.analyze(ast, undefined, {
+        filePath: normalizedPath,
+        templateRoots: this.context.templateRoots,
+        visited: visitedSet
+      });
+    } catch {
+      return undefined;
+    } finally {
+      visitedSet?.delete(normalizedPath);
+    }
   }
 
   private extractDefinedVariables(expr: ExpressionNode): string[] {

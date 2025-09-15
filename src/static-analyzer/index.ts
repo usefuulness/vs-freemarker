@@ -3,8 +3,8 @@ import { FreeMarkerParser, TemplateNode, MacroNode } from './parser';
 import { SemanticAnalyzer } from './semantic-analyzer';
 import { ErrorReporter } from './error-reporter';
 import { PerformanceProfiler } from './performance-profiler';
-import * as fs from 'fs';
 import * as path from 'path';
+import { resolveTemplatePath } from './path-utils';
 
 export interface AnalysisResult {
   ast: any;
@@ -86,14 +86,30 @@ export class FreeMarkerStaticAnalyzer {
   private semanticAnalyzer: SemanticAnalyzer = new SemanticAnalyzer();
   private errorReporter: ErrorReporter = new ErrorReporter();
   private profiler: PerformanceProfiler = new PerformanceProfiler();
+  private templateRoots: string[] = [process.cwd()];
 
   constructor() {
     this.parser = new FreeMarkerParser([]);
   }
 
-    public analyze(template: string, filePath?: string): AnalysisResult {
-      this.profiler.start();
-      this.errorReporter.clear();
+  public setTemplateRoots(roots: string[]): void {
+    if (roots.length === 0) {
+      this.templateRoots = [process.cwd()];
+      return;
+    }
+
+    this.templateRoots = roots
+      .filter(root => root && root.trim().length > 0)
+      .map(root => path.resolve(root));
+
+    if (this.templateRoots.length === 0) {
+      this.templateRoots = [process.cwd()];
+    }
+  }
+
+  public analyze(template: string, filePath?: string): AnalysisResult {
+    this.profiler.start();
+    this.errorReporter.clear();
 
       try {
         this.checkBasicSyntax(template);
@@ -130,7 +146,10 @@ export class FreeMarkerStaticAnalyzer {
 
         // Semantic analysis
         this.profiler.startPhase('semanticAnalysis');
-        const semanticInfo = this.semanticAnalyzer.analyze(ast, this.errorReporter);
+        const semanticInfo = this.semanticAnalyzer.analyze(ast, this.errorReporter, {
+          filePath,
+          templateRoots: this.templateRoots
+        });
         this.profiler.endPhase('semanticAnalysis');
 
       this.validateDependencies(template, ast, filePath);
@@ -202,11 +221,13 @@ export class FreeMarkerStaticAnalyzer {
       return;
     }
 
-    const baseDir = path.dirname(filePath);
-
     const checkPath = (p: string, start: number, end: number): void => {
-      const resolved = path.resolve(baseDir, p);
-      if (!fs.existsSync(resolved)) {
+      const resolved = resolveTemplatePath(p, {
+        currentFile: filePath,
+        templateRoots: this.templateRoots
+      });
+
+      if (!resolved) {
         const range = ErrorReporter.createRangeFromOffsets(content, start, end);
         this.errorReporter.addError(`File not found: ${p}`, range, 'FTL4001');
       }

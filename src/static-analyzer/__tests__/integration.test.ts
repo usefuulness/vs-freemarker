@@ -120,6 +120,45 @@ describe('FreeMarker Static Analyzer Integration', () => {
         const result = analyzer.analyze(template);
         expect(result.diagnostics.some(d => d.code === 'FTL2004' && /(title|path)/.test(d.message))).toBe(false);
       });
+
+      test('makes macros from included templates available', () => {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-include-'));
+        const layoutsDir = path.join(tmpDir, 'layouts');
+        fs.mkdirSync(layoutsDir, { recursive: true });
+        const layoutPath = path.join(layoutsDir, 'main.ftl');
+        fs.writeFileSync(layoutPath, '<#macro layout title>${title}</#macro>');
+
+        const template = '<#include "/layouts/main.ftl"/><@layout title="Home"></@layout>';
+        const mainPath = path.join(tmpDir, 'page.ftl');
+        fs.writeFileSync(mainPath, template);
+
+        analyzer.setTemplateRoots([tmpDir]);
+        const result = analyzer.analyze(template, mainPath);
+
+        expect(result.diagnostics.some(d => d.code === 'FTL2004' && d.message.includes('layout'))).toBe(false);
+
+        const templateWithParam = '<#include path="/layouts/main.ftl"/><@layout title="Home"></@layout>';
+        const resultWithParam = analyzer.analyze(templateWithParam, mainPath);
+        expect(resultWithParam.diagnostics.some(d => d.code === 'FTL2004' && d.message.includes('layout'))).toBe(false);
+      });
+
+      test('resolves imports relative to configured template roots', () => {
+        const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fm-import-'));
+        const layoutsDir = path.join(tmpDir, 'layouts');
+        fs.mkdirSync(layoutsDir, { recursive: true });
+        const importPath = path.join(layoutsDir, 'main.ftl');
+        fs.writeFileSync(importPath, '<#macro layout title>${title}</#macro>');
+
+        const template = '<#import "/layouts/main.ftl" as layout/>' +
+          '<@layout.layout title="Home"/>';
+        const mainPath = path.join(tmpDir, 'page.ftl');
+        fs.writeFileSync(mainPath, template);
+
+        analyzer.setTemplateRoots([tmpDir]);
+        const result = analyzer.analyze(template, mainPath);
+
+        expect(result.diagnostics.some(d => d.code === 'FTL2004' && d.message.includes('layout'))).toBe(false);
+      });
     });
 
   describe('Basic robustness', () => {

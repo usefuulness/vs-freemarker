@@ -153,6 +153,7 @@
       </div>
       <div class="stat-item">
         <span class="stat-number">${currentYear}</span>
+        ${hallo}
         <span class="stat-label">Current Year</span>
       </div>
     </div>

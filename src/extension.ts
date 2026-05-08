@@ -1,21 +1,32 @@
 import * as path from 'path';
 import * as vscode from 'vscode';
-import { FreeMarkerStaticAnalyzer, Range as AnalyzerRange } from './static-analyzer';
+import { FreeMarkerStaticAnalyzer } from './static-analyzer';
 import { ImportResolver, ResolverOptions } from './static-analyzer/import-resolver';
+import { DocumentAnalysisService } from './intellisense/document-analysis-service';
+import { registerFreeMarkerProviders } from './intellisense/providers';
 
 let diagnosticCollection: vscode.DiagnosticCollection;
 let analyzer: FreeMarkerStaticAnalyzer;
 let importResolver: ImportResolver;
+let analysisService: DocumentAnalysisService;
 
 export function activate(context: vscode.ExtensionContext): void {
   analyzer = new FreeMarkerStaticAnalyzer();
   importResolver = createImportResolver();
+  analysisService = new DocumentAnalysisService(analyzer, getAnalysisDebounceMs(), getMaxCachedDocuments());
   diagnosticCollection = vscode.languages.createDiagnosticCollection('freemarker');
   context.subscriptions.push(diagnosticCollection);
+  context.subscriptions.push({ dispose: () => analysisService.dispose() });
+
+  registerFreeMarkerProviders(context, analysisService, {
+    htmlEnabled: () => vscode.workspace.getConfiguration('freemarker').get<boolean>('intellisense.html.enabled', true),
+    templateRoots: () => getTemplateRoots(getImportResolverOptions())
+  });
 
   context.subscriptions.push(
     vscode.commands.registerCommand('freemarker.clearImportCache', () => {
       importResolver?.invalidateCache();
+      analysisService?.invalidate();
       refreshOpenDocuments();
       void vscode.window.showInformationMessage('FreeMarker template cache cleared.');
     })
@@ -27,12 +38,33 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     vscode.workspace.onDidOpenTextDocument(document => void refreshDiagnostics(document)),
-    vscode.workspace.onDidChangeTextDocument(e => void refreshDiagnostics(e.document)),
-    vscode.workspace.onDidCloseTextDocument(doc => diagnosticCollection.delete(doc.uri)),
+    vscode.workspace.onDidChangeTextDocument(e => {
+      analysisService.schedule({
+        document: e.document,
+        onComplete: analysis => {
+          if (analysis) {
+            updateDiagnostics(e.document, analysis.result.diagnostics);
+          }
+        }
+      });
+    }),
+    vscode.workspace.onDidCloseTextDocument(doc => {
+      diagnosticCollection.delete(doc.uri);
+      analysisService.invalidate(doc.uri);
+    }),
     vscode.workspace.onDidChangeConfiguration(event => {
       if (affectsImportResolverConfiguration(event)) {
         updateImportResolverConfiguration();
         refreshOpenDocuments();
+      }
+      if (affectsAnalysisConfiguration(event)) {
+        analysisService.configure({
+          debounceMs: getAnalysisDebounceMs(),
+          maxCachedDocuments: getMaxCachedDocuments()
+        });
+      }
+      if (event.affectsConfiguration('freemarker.intellisense.html.enabled')) {
+        analysisService.invalidate();
       }
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
@@ -43,14 +75,27 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 async function refreshDiagnostics(document: vscode.TextDocument): Promise<void> {
-
   if (document.languageId !== 'ftl') {
     return;
   }
 
   try {
-    const result = await analyzer.analyze(document.getText(), document.uri.fsPath);
-    const diagnostics = result.diagnostics.map(d => {
+    const analysis = await analysisService.analyzeNow(document);
+    if (!analysis) {
+      return;
+    }
+    updateDiagnostics(document, analysis.result.diagnostics);
+  } catch (error) {
+    console.error('Failed to analyze FreeMarker template', error);
+  }
+}
+
+function updateDiagnostics(document: vscode.TextDocument, analyzerDiagnostics: ReturnType<FreeMarkerStaticAnalyzer['getDiagnostics']>): void {
+  if (document.languageId !== 'ftl') {
+    return;
+  }
+
+  const diagnostics = analyzerDiagnostics.map(d => {
       const start = new vscode.Position(d.range.start.line - 1, d.range.start.character - 1);
       const end = new vscode.Position(d.range.end.line - 1, d.range.end.character - 1);
       const range = new vscode.Range(start, end);
@@ -77,15 +122,13 @@ async function refreshDiagnostics(document: vscode.TextDocument): Promise<void> 
 
     });
 
-    diagnosticCollection.set(document.uri, diagnostics);
-  } catch (error) {
-    console.error('Failed to analyze FreeMarker template', error);
-  }
+  diagnosticCollection.set(document.uri, diagnostics);
 }
 
 export function deactivate(): void {
   diagnosticCollection?.dispose();
   importResolver?.invalidateCache();
+  analysisService?.dispose();
 }
 
 function createImportResolver(): ImportResolver {
@@ -106,66 +149,11 @@ function affectsImportResolverConfiguration(event: vscode.ConfigurationChangeEve
   );
 }
 
-interface ZeroBasedPosition {
-  line: number;
-  character: number;
-}
-
-function toVsCodeRange(range?: AnalyzerRange): vscode.Range | undefined {
-  const start = toZeroBasedPosition(range?.start);
-  const end = toZeroBasedPosition(range?.end);
-
-  if (!start || !end) {
-    return undefined;
-  }
-
-  const finalEnd = adjustEndPosition(start, end);
-
-  try {
-    return new vscode.Range(
-      new vscode.Position(start.line, start.character),
-      new vscode.Position(finalEnd.line, finalEnd.character)
-    );
-  } catch (error) {
-    console.warn('[FreeMarker] Unable to create VS Code range', error, range);
-    return undefined;
-  }
-}
-
-function toZeroBasedPosition(position?: AnalyzerRange['start']): ZeroBasedPosition | undefined {
-  if (!position) {
-    return undefined;
-  }
-
-  const line = toZeroBased(position.line);
-  const character = toZeroBased(position.character);
-
-  if (line === undefined || character === undefined) {
-    return undefined;
-  }
-
-  return { line, character };
-}
-
-function toZeroBased(value?: number): number | undefined {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return undefined;
-  }
-
-  const normalized = Math.floor(value) - 1;
-  return normalized < 0 ? 0 : normalized;
-}
-
-function adjustEndPosition(start: ZeroBasedPosition, end: ZeroBasedPosition): ZeroBasedPosition {
-  if (end.line < start.line) {
-    return { ...start };
-  }
-
-  if (end.line === start.line && end.character < start.character) {
-    return { ...start };
-  }
-
-  return end;
+function affectsAnalysisConfiguration(event: vscode.ConfigurationChangeEvent): boolean {
+  return (
+    event.affectsConfiguration('freemarker.analysis.debounceMs') ||
+    event.affectsConfiguration('freemarker.analysis.maxCachedDocuments')
+  );
 }
 
 function getImportResolverOptions(): ResolverOptions {
@@ -219,6 +207,10 @@ function resolveBasePath(configuredBase: string | undefined, workspaceBase?: str
 }
 
 function applyTemplateRoots(options: ResolverOptions): void {
+  analyzer.setTemplateRoots(getTemplateRoots(options));
+}
+
+function getTemplateRoots(options: ResolverOptions): string[] {
   const workspacePaths = getWorkspacePaths();
   const roots = new Set<string>();
 
@@ -244,7 +236,7 @@ function applyTemplateRoots(options: ResolverOptions): void {
     }
   });
 
-  analyzer.setTemplateRoots(Array.from(roots));
+  return Array.from(roots);
 }
 
 function getWorkspacePaths(): string[] {
@@ -260,10 +252,19 @@ function updateImportResolverConfiguration(): void {
   applyTemplateRoots(options);
   importResolver.updateOptions(options);
   importResolver.invalidateCache();
+  analysisService?.invalidate();
 }
 
 function refreshOpenDocuments(): void {
   vscode.workspace.textDocuments
     .filter(doc => doc.languageId === 'ftl')
     .forEach(doc => void refreshDiagnostics(doc));
+}
+
+function getAnalysisDebounceMs(): number {
+  return Math.max(0, vscode.workspace.getConfiguration('freemarker').get<number>('analysis.debounceMs', 150));
+}
+
+function getMaxCachedDocuments(): number {
+  return Math.max(0, vscode.workspace.getConfiguration('freemarker').get<number>('analysis.maxCachedDocuments', 100));
 }
